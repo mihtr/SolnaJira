@@ -1122,6 +1122,11 @@ class JiraWorklogExtractor:
                 <tbody>
 """
 
+        # Calculate totals for Product Item
+        product_item_total_hours = sum(stats['hours'] for _, stats in product_items_sorted)
+        product_item_total_entries = sum(stats['entries'] for _, stats in product_items_sorted)
+        product_item_total_issues = len(set().union(*[stats['issues'] for _, stats in product_items_sorted]))
+
         for product_item, stats in product_items_sorted:
             percentage = (stats['hours'] / total_hours * 100) if total_hours > 0 else 0
             issue_count = len(stats['issues'])
@@ -1142,8 +1147,18 @@ class JiraWorklogExtractor:
                     </tr>
 """
 
-        html += """
+        html += f"""
                 </tbody>
+                <tfoot>
+                    <tr style="font-weight: bold; background-color: #f0f0f0;">
+                        <td>TOTAL</td>
+                        <td>{product_item_total_hours:.2f}h</td>
+                        <td>{product_item_total_entries}</td>
+                        <td>{product_item_total_issues}</td>
+                        <td>100.0%</td>
+                        <td></td>
+                    </tr>
+                </tfoot>
             </table>
         </div>
 
@@ -1162,6 +1177,11 @@ class JiraWorklogExtractor:
                 </thead>
                 <tbody>
 """
+
+        # Calculate totals for Component
+        component_total_hours = sum(stats['hours'] for _, stats in components_sorted)
+        component_total_entries = sum(stats['entries'] for _, stats in components_sorted)
+        component_total_issues = len(set().union(*[stats['issues'] for _, stats in components_sorted]))
 
         for component, stats in components_sorted:
             percentage = (stats['hours'] / total_hours * 100) if total_hours > 0 else 0
@@ -1183,8 +1203,18 @@ class JiraWorklogExtractor:
                     </tr>
 """
 
-        html += """
+        html += f"""
                 </tbody>
+                <tfoot>
+                    <tr style="font-weight: bold; background-color: #f0f0f0;">
+                        <td>TOTAL</td>
+                        <td>{component_total_hours:.2f}h</td>
+                        <td>{component_total_entries}</td>
+                        <td>{component_total_issues}</td>
+                        <td>100.0%</td>
+                        <td></td>
+                    </tr>
+                </tfoot>
             </table>
         </div>
 
@@ -1203,6 +1233,11 @@ class JiraWorklogExtractor:
                 </thead>
                 <tbody>
 """
+
+        # Calculate totals for Label
+        label_total_hours = sum(stats['hours'] for _, stats in labels_sorted)
+        label_total_entries = sum(stats['entries'] for _, stats in labels_sorted)
+        label_total_issues = len(set().union(*[stats['issues'] for _, stats in labels_sorted]))
 
         for label, stats in labels_sorted:
             percentage = (stats['hours'] / total_hours * 100) if total_hours > 0 else 0
@@ -1224,8 +1259,18 @@ class JiraWorklogExtractor:
                     </tr>
 """
 
-        html += """
+        html += f"""
                 </tbody>
+                <tfoot>
+                    <tr style="font-weight: bold; background-color: #f0f0f0;">
+                        <td>TOTAL</td>
+                        <td>{label_total_hours:.2f}h</td>
+                        <td>{label_total_entries}</td>
+                        <td>{label_total_issues}</td>
+                        <td>100.0%</td>
+                        <td></td>
+                    </tr>
+                </tfoot>
             </table>
         </div>
 
@@ -1244,6 +1289,11 @@ class JiraWorklogExtractor:
                 </thead>
                 <tbody>
 """
+
+        # Calculate totals for Team
+        team_total_hours = sum(stats['hours'] for _, stats in teams_sorted)
+        team_total_entries = sum(stats['entries'] for _, stats in teams_sorted)
+        team_total_issues = len(set().union(*[stats['issues'] for _, stats in teams_sorted]))
 
         for team, stats in teams_sorted:
             percentage = (stats['hours'] / total_hours * 100) if total_hours > 0 else 0
@@ -1265,8 +1315,18 @@ class JiraWorklogExtractor:
                     </tr>
 """
 
-        html += """
+        html += f"""
                 </tbody>
+                <tfoot>
+                    <tr style="font-weight: bold; background-color: #f0f0f0;">
+                        <td>TOTAL</td>
+                        <td>{team_total_hours:.2f}h</td>
+                        <td>{team_total_entries}</td>
+                        <td>{team_total_issues}</td>
+                        <td>100.0%</td>
+                        <td></td>
+                    </tr>
+                </tfoot>
             </table>
         </div>
 
@@ -1285,6 +1345,10 @@ class JiraWorklogExtractor:
                 </thead>
                 <tbody>
 """
+
+        # Calculate totals for Author
+        author_total_hours = sum(stats['hours'] for _, stats in authors_sorted)
+        author_total_entries = sum(stats['entries'] for _, stats in authors_sorted)
 
         for i, (author, stats) in enumerate(authors_sorted):
             percentage = (stats['hours'] / total_hours * 100) if total_hours > 0 else 0
@@ -1333,8 +1397,18 @@ class JiraWorklogExtractor:
                     </tr>
 """
 
-        html += """
+        html += f"""
                 </tbody>
+                <tfoot>
+                    <tr style="font-weight: bold; background-color: #f0f0f0;">
+                        <td>TOTAL</td>
+                        <td>{author_total_hours:.2f}h</td>
+                        <td>{author_total_entries}</td>
+                        <td>100.0%</td>
+                        <td></td>
+                        <td></td>
+                    </tr>
+                </tfoot>
             </table>
         </div>
 
@@ -1360,6 +1434,11 @@ class JiraWorklogExtractor:
                 </thead>
                 <tbody>
 """
+
+        # Calculate totals for Issue
+        issue_total_hours = sum(stats['hours'] for _, stats in issues_sorted)
+        issue_total_entries = sum(stats['entries'] for _, stats in issues_sorted)
+        issue_total_contributors = len(set().union(*[stats['authors'] for _, stats in issues_sorted]))
 
         for issue_key, stats in issues_sorted:
             percentage = (stats['hours'] / total_hours * 100) if total_hours > 0 else 0
@@ -1400,6 +1479,16 @@ class JiraWorklogExtractor:
 
         html += f"""
                 </tbody>
+                <tfoot>
+                    <tr style="font-weight: bold; background-color: #f0f0f0;">
+                        <td colspan="8">TOTAL</td>
+                        <td>{issue_total_hours:.2f}h</td>
+                        <td>{issue_total_entries}</td>
+                        <td>{issue_total_contributors} unique</td>
+                        <td>100.0%</td>
+                        <td></td>
+                    </tr>
+                </tfoot>
             </table>
         </div>
 
