@@ -396,6 +396,7 @@ class JiraWorklogExtractor:
         # Calculate summary statistics
         by_author = defaultdict(lambda: {'hours': 0, 'entries': 0, 'worklogs': []})
         by_issue = defaultdict(lambda: {'hours': 0, 'entries': 0, 'authors': set(), 'issue_type': '', 'epic_link': '', 'summary': ''})
+        by_year_month = defaultdict(lambda: {'hours': 0, 'entries': 0})
         total_seconds = 0
 
         for worklog in worklogs:
@@ -414,6 +415,14 @@ class JiraWorklogExtractor:
             by_issue[issue_key]['epic_link'] = worklog['epic_link']
             by_issue[issue_key]['summary'] = worklog['summary']
 
+            # Extract year and month from worklog started date
+            if worklog['started']:
+                # started format: 2024-03-15T10:30:00.000+0000
+                date_part = worklog['started'][:10]  # Get YYYY-MM-DD
+                year_month = date_part[:7]  # Get YYYY-MM
+                by_year_month[year_month]['hours'] += seconds / 3600
+                by_year_month[year_month]['entries'] += 1
+
             total_seconds += seconds
 
         total_hours = total_seconds / 3600
@@ -421,6 +430,7 @@ class JiraWorklogExtractor:
         # Sort data
         authors_sorted = sorted(by_author.items(), key=lambda x: x[1]['hours'], reverse=True)
         issues_sorted = sorted(by_issue.items(), key=lambda x: x[1]['hours'], reverse=True)
+        year_month_sorted = sorted(by_year_month.items(), key=lambda x: x[0])  # Sort by date
 
         # Generate HTML
         html = f"""<!DOCTYPE html>
@@ -682,6 +692,44 @@ class JiraWorklogExtractor:
                 <div class="number">{len(by_issue)}</div>
                 <div class="label">Issues</div>
             </div>
+        </div>
+
+        <div class="section">
+            <h2 class="section-title">Hours by Year and Month</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Year-Month</th>
+                        <th>Hours</th>
+                        <th>Entries</th>
+                        <th>% of Total</th>
+                        <th>Distribution</th>
+                    </tr>
+                </thead>
+                <tbody>
+"""
+
+        for year_month, stats in year_month_sorted:
+            percentage = (stats['hours'] / total_hours * 100) if total_hours > 0 else 0
+            html += f"""
+                    <tr>
+                        <td><strong>{year_month}</strong></td>
+                        <td>{stats['hours']:.2f}h</td>
+                        <td>{stats['entries']}</td>
+                        <td>{percentage:.1f}%</td>
+                        <td>
+                            <div class="progress-bar">
+                                <div class="progress-fill" style="width: {percentage}%">
+                                    {percentage:.1f}%
+                                </div>
+                            </div>
+                        </td>
+                    </tr>
+"""
+
+        html += """
+                </tbody>
+            </table>
         </div>
 
         <div class="section">
