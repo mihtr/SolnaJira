@@ -20,6 +20,11 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import pickle
 import hashlib
 import time
+import logging
+from logging.handlers import RotatingFileHandler
+import openpyxl
+from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
+from openpyxl.utils import get_column_letter
 
 # Version
 VERSION = "1.0.0"
@@ -35,8 +40,63 @@ PROJECT_KEY = os.getenv('PROJECT_KEY', 'ZYN')
 ERP_ACTIVITY_FILTER = os.getenv('ERP_ACTIVITY_FILTER', 'ProjectTask-00000007118797')
 LOG_LEVEL = int(os.getenv('LOG_LEVEL', '1'))  # 1 = standard, 2 = debug (shows [DEBUG] messages)
 
+def setup_logging(log_level=1, log_dir='logs'):
+    """
+    Setup logging with both console and file output.
+
+    Args:
+        log_level: 1 for INFO, 2 for DEBUG
+        log_dir: Directory to store log files (default: 'logs')
+
+    Returns:
+        logger: Configured logger instance
+    """
+    # Create logs directory if it doesn't exist
+    log_dir_path = Path(log_dir)
+    log_dir_path.mkdir(exist_ok=True)
+
+    # Generate log filename with timestamp
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    log_filename = log_dir_path / f'jira_extractor_{timestamp}.log'
+
+    # Set log level based on input
+    level = logging.DEBUG if log_level >= 2 else logging.INFO
+
+    # Create logger
+    logger = logging.getLogger('JiraWorklogExtractor')
+    logger.setLevel(level)
+
+    # Clear any existing handlers
+    logger.handlers.clear()
+
+    # Create formatters
+    detailed_formatter = logging.Formatter(
+        '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+    console_formatter = logging.Formatter('%(message)s')
+
+    # File handler with rotation (max 10 files, 10MB each)
+    file_handler = RotatingFileHandler(
+        log_filename,
+        maxBytes=10*1024*1024,  # 10MB
+        backupCount=10,
+        encoding='utf-8'
+    )
+    file_handler.setLevel(level)
+    file_handler.setFormatter(detailed_formatter)
+    logger.addHandler(file_handler)
+
+    # Console handler (INFO and above only for clean output)
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
+    console_handler.setFormatter(console_formatter)
+    logger.addHandler(console_handler)
+
+    return logger
+
 class JiraWorklogExtractor:
-    def __init__(self, jira_url, api_token, project_key=None, erp_activity_filter=None, log_level=1, cache_dir='.cache', use_cache=True, cache_ttl=3600, skip_validation=False):
+    def __init__(self, jira_url, api_token, project_key=None, erp_activity_filter=None, log_level=1, cache_dir='.cache', use_cache=True, cache_ttl=3600, skip_validation=False, logger=None):
         self.jira_url = jira_url.rstrip('/')
         self.api_token = api_token
         self.project_key = project_key or PROJECT_KEY
@@ -44,6 +104,7 @@ class JiraWorklogExtractor:
         self.log_level = log_level
         self.use_cache = use_cache
         self.cache_ttl = cache_ttl  # Cache time-to-live in seconds (default: 1 hour)
+        self.logger = logger or logging.getLogger('JiraWorklogExtractor')
         self.headers = {
             "Accept": "application/json",
             "Authorization": f"Bearer {api_token}"
@@ -56,8 +117,7 @@ class JiraWorklogExtractor:
         self.cache_dir = Path(cache_dir)
         if self.use_cache:
             self.cache_dir.mkdir(exist_ok=True)
-            if self.log_level >= 2:
-                print(f"[DEBUG] Cache enabled: {self.cache_dir.absolute()} (TTL: {cache_ttl}s)")
+            self.logger.debug(f"Cache enabled: {self.cache_dir.absolute()} (TTL: {cache_ttl}s)")
 
         # Validate configuration if not skipped
         if not skip_validation:
@@ -266,19 +326,16 @@ class JiraWorklogExtractor:
             # Check if cache is expired
             file_age = time.time() - cache_file.stat().st_mtime
             if file_age > self.cache_ttl:
-                if self.log_level >= 2:
-                    print(f"[DEBUG] Cache expired: {cache_key} (age: {file_age:.0f}s)")
+                self.logger.debug(f"Cache expired: {cache_key} (age: {file_age:.0f}s)")
                 cache_file.unlink()  # Delete expired cache
                 return None
 
             with open(cache_file, 'rb') as f:
                 data = pickle.load(f)
-                if self.log_level >= 2:
-                    print(f"[DEBUG] Cache hit: {cache_key}")
+                self.logger.debug(f"Cache hit: {cache_key}")
                 return data
         except Exception as e:
-            if self.log_level >= 1:
-                print(f"  Warning: Failed to read cache {cache_key}: {e}")
+            self.logger.warning(f"Failed to read cache {cache_key}: {e}")
             return None
 
     def _save_to_cache(self, cache_key, data):
@@ -290,11 +347,9 @@ class JiraWorklogExtractor:
         try:
             with open(cache_file, 'wb') as f:
                 pickle.dump(data, f)
-                if self.log_level >= 2:
-                    print(f"[DEBUG] Cache saved: {cache_key}")
+                self.logger.debug(f"Cache saved: {cache_key}")
         except Exception as e:
-            if self.log_level >= 1:
-                print(f"  Warning: Failed to save cache {cache_key}: {e}")
+            self.logger.warning(f"Failed to save cache {cache_key}: {e}")
 
     def search_issues(self, jql, fields=None, max_results=100):
         """Search for issues using JQL"""
@@ -688,6 +743,257 @@ class JiraWorklogExtractor:
                 })
 
         print(f"Worklogs exported to {filename}")
+
+    def export_to_excel(self, worklogs, filename='worklogs_export.xlsx'):
+        """
+        Export worklogs to Excel with multiple sheets and formatting.
+
+        Sheets included:
+        - Summary: Overall statistics
+        - Hours by Year/Month: Time aggregated by month
+        - Hours by Product Item: Time by product
+        - Hours by Component: Time by component
+        - Hours by Label: Time by label
+        - Hours by Team: Time by team
+        - Hours by Author: Time by contributor
+        - Hours by Issue: Time by issue
+        - All Worklog Entries: Raw worklog data
+        """
+        if not worklogs:
+            print("No worklogs to export")
+            return
+
+        # Create workbook
+        wb = openpyxl.Workbook()
+        wb.remove(wb.active)  # Remove default sheet
+
+        # Define styles
+        header_font = Font(bold=True, color="FFFFFF")
+        header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+        header_alignment = Alignment(horizontal="center", vertical="center")
+        border = Border(
+            left=Side(style='thin'),
+            right=Side(style='thin'),
+            top=Side(style='thin'),
+            bottom=Side(style='thin')
+        )
+
+        # Calculate aggregations
+        by_author = defaultdict(lambda: {'hours': 0, 'entries': 0})
+        by_issue = defaultdict(lambda: {'hours': 0, 'entries': 0, 'summary': '', 'issue_type': ''})
+        by_year_month = defaultdict(lambda: {'hours': 0, 'entries': 0})
+        by_product_item = defaultdict(lambda: {'hours': 0, 'entries': 0, 'issues': set()})
+        by_component = defaultdict(lambda: {'hours': 0, 'entries': 0, 'issues': set()})
+        by_label = defaultdict(lambda: {'hours': 0, 'entries': 0, 'issues': set()})
+        by_team = defaultdict(lambda: {'hours': 0, 'entries': 0, 'issues': set()})
+        total_seconds = 0
+
+        for worklog in worklogs:
+            author = worklog['author']
+            issue_key = worklog['issue_key']
+            seconds = worklog['time_spent_seconds']
+
+            by_author[author]['hours'] += seconds / 3600
+            by_author[author]['entries'] += 1
+
+            by_issue[issue_key]['hours'] += seconds / 3600
+            by_issue[issue_key]['entries'] += 1
+            by_issue[issue_key]['summary'] = worklog['summary']
+            by_issue[issue_key]['issue_type'] = worklog['issue_type']
+
+            # Year/Month
+            if worklog['started']:
+                year_month = worklog['started'][:7]
+                by_year_month[year_month]['hours'] += seconds / 3600
+                by_year_month[year_month]['entries'] += 1
+
+            # Product Item
+            product_item = worklog.get('product_item', 'None')
+            by_product_item[product_item]['hours'] += seconds / 3600
+            by_product_item[product_item]['entries'] += 1
+            by_product_item[product_item]['issues'].add(issue_key)
+
+            # Component
+            components = worklog.get('components', [])
+            component_key = ', '.join(sorted(components)) if components else 'None'
+            by_component[component_key]['hours'] += seconds / 3600
+            by_component[component_key]['entries'] += 1
+            by_component[component_key]['issues'].add(issue_key)
+
+            # Label
+            labels = worklog.get('labels', [])
+            label_key = ', '.join(sorted(labels)) if labels else 'None'
+            by_label[label_key]['hours'] += seconds / 3600
+            by_label[label_key]['entries'] += 1
+            by_label[label_key]['issues'].add(issue_key)
+
+            # Team
+            team = worklog.get('team', 'None')
+            by_team[team]['hours'] += seconds / 3600
+            by_team[team]['entries'] += 1
+            by_team[team]['issues'].add(issue_key)
+
+            total_seconds += seconds
+
+        total_hours = total_seconds / 3600
+
+        # Helper function to format headers
+        def format_header_row(ws, row_num, headers):
+            for col_num, header in enumerate(headers, 1):
+                cell = ws.cell(row=row_num, column=col_num)
+                cell.value = header
+                cell.font = header_font
+                cell.fill = header_fill
+                cell.alignment = header_alignment
+                cell.border = border
+
+        # Helper function to auto-size columns
+        def auto_size_columns(ws):
+            for column in ws.columns:
+                max_length = 0
+                column = [cell for cell in column]
+                for cell in column:
+                    try:
+                        if len(str(cell.value)) > max_length:
+                            max_length = len(str(cell.value))
+                    except:
+                        pass
+                adjusted_width = min(max_length + 2, 50)
+                ws.column_dimensions[get_column_letter(column[0].column)].width = adjusted_width
+
+        # Sheet 1: Summary
+        ws_summary = wb.create_sheet("Summary")
+        summary_data = [
+            ["Metric", "Value"],
+            ["Total Hours", round(total_hours, 2)],
+            ["Total Entries", len(worklogs)],
+            ["Contributors", len(by_author)],
+            ["Issues", len(by_issue)],
+            ["Product Items", len(by_product_item)],
+            ["Components", len(by_component)],
+            ["Labels", len(by_label)],
+            ["Teams", len(by_team)]
+        ]
+        for row_num, row_data in enumerate(summary_data, 1):
+            for col_num, value in enumerate(row_data, 1):
+                cell = ws_summary.cell(row=row_num, column=col_num)
+                cell.value = value
+                cell.border = border
+                if row_num == 1:
+                    cell.font = header_font
+                    cell.fill = header_fill
+                    cell.alignment = header_alignment
+        auto_size_columns(ws_summary)
+
+        # Sheet 2: Hours by Year/Month
+        ws_year_month = wb.create_sheet("Hours by Year-Month")
+        format_header_row(ws_year_month, 1, ["Year-Month", "Hours", "Entries"])
+        for row_num, (year_month, data) in enumerate(sorted(by_year_month.items()), 2):
+            ws_year_month.cell(row=row_num, column=1).value = year_month
+            ws_year_month.cell(row=row_num, column=2).value = round(data['hours'], 2)
+            ws_year_month.cell(row=row_num, column=3).value = data['entries']
+            for col in range(1, 4):
+                ws_year_month.cell(row=row_num, column=col).border = border
+        auto_size_columns(ws_year_month)
+
+        # Sheet 3: Hours by Product Item
+        ws_product = wb.create_sheet("Hours by Product Item")
+        format_header_row(ws_product, 1, ["Product Item", "Hours", "Entries", "Issues"])
+        for row_num, (product, data) in enumerate(sorted(by_product_item.items(), key=lambda x: x[1]['hours'], reverse=True), 2):
+            ws_product.cell(row=row_num, column=1).value = product
+            ws_product.cell(row=row_num, column=2).value = round(data['hours'], 2)
+            ws_product.cell(row=row_num, column=3).value = data['entries']
+            ws_product.cell(row=row_num, column=4).value = len(data['issues'])
+            for col in range(1, 5):
+                ws_product.cell(row=row_num, column=col).border = border
+        auto_size_columns(ws_product)
+
+        # Sheet 4: Hours by Component
+        ws_component = wb.create_sheet("Hours by Component")
+        format_header_row(ws_component, 1, ["Component", "Hours", "Entries", "Issues"])
+        for row_num, (component, data) in enumerate(sorted(by_component.items(), key=lambda x: x[1]['hours'], reverse=True), 2):
+            ws_component.cell(row=row_num, column=1).value = component
+            ws_component.cell(row=row_num, column=2).value = round(data['hours'], 2)
+            ws_component.cell(row=row_num, column=3).value = data['entries']
+            ws_component.cell(row=row_num, column=4).value = len(data['issues'])
+            for col in range(1, 5):
+                ws_component.cell(row=row_num, column=col).border = border
+        auto_size_columns(ws_component)
+
+        # Sheet 5: Hours by Label
+        ws_label = wb.create_sheet("Hours by Label")
+        format_header_row(ws_label, 1, ["Label", "Hours", "Entries", "Issues"])
+        for row_num, (label, data) in enumerate(sorted(by_label.items(), key=lambda x: x[1]['hours'], reverse=True), 2):
+            ws_label.cell(row=row_num, column=1).value = label
+            ws_label.cell(row=row_num, column=2).value = round(data['hours'], 2)
+            ws_label.cell(row=row_num, column=3).value = data['entries']
+            ws_label.cell(row=row_num, column=4).value = len(data['issues'])
+            for col in range(1, 5):
+                ws_label.cell(row=row_num, column=col).border = border
+        auto_size_columns(ws_label)
+
+        # Sheet 6: Hours by Team
+        ws_team = wb.create_sheet("Hours by Team")
+        format_header_row(ws_team, 1, ["Team", "Hours", "Entries", "Issues"])
+        for row_num, (team, data) in enumerate(sorted(by_team.items(), key=lambda x: x[1]['hours'], reverse=True), 2):
+            ws_team.cell(row=row_num, column=1).value = team
+            ws_team.cell(row=row_num, column=2).value = round(data['hours'], 2)
+            ws_team.cell(row=row_num, column=3).value = data['entries']
+            ws_team.cell(row=row_num, column=4).value = len(data['issues'])
+            for col in range(1, 5):
+                ws_team.cell(row=row_num, column=col).border = border
+        auto_size_columns(ws_team)
+
+        # Sheet 7: Hours by Author
+        ws_author = wb.create_sheet("Hours by Author")
+        format_header_row(ws_author, 1, ["Author", "Hours", "Entries"])
+        for row_num, (author, data) in enumerate(sorted(by_author.items(), key=lambda x: x[1]['hours'], reverse=True), 2):
+            ws_author.cell(row=row_num, column=1).value = author
+            ws_author.cell(row=row_num, column=2).value = round(data['hours'], 2)
+            ws_author.cell(row=row_num, column=3).value = data['entries']
+            for col in range(1, 4):
+                ws_author.cell(row=row_num, column=col).border = border
+        auto_size_columns(ws_author)
+
+        # Sheet 8: Hours by Issue
+        ws_issue = wb.create_sheet("Hours by Issue")
+        format_header_row(ws_issue, 1, ["Issue Key", "Summary", "Issue Type", "Hours", "Entries"])
+        for row_num, (issue, data) in enumerate(sorted(by_issue.items(), key=lambda x: x[1]['hours'], reverse=True), 2):
+            ws_issue.cell(row=row_num, column=1).value = issue
+            ws_issue.cell(row=row_num, column=2).value = data['summary']
+            ws_issue.cell(row=row_num, column=3).value = data['issue_type']
+            ws_issue.cell(row=row_num, column=4).value = round(data['hours'], 2)
+            ws_issue.cell(row=row_num, column=5).value = data['entries']
+            for col in range(1, 6):
+                ws_issue.cell(row=row_num, column=col).border = border
+        auto_size_columns(ws_issue)
+
+        # Sheet 9: All Worklog Entries
+        ws_entries = wb.create_sheet("All Worklog Entries")
+        headers = ['Issue Key', 'Summary', 'Issue Type', 'Epic Link', 'Author', 'Author Email',
+                   'Time Spent', 'Hours', 'Started', 'Product Item', 'Team', 'Comment']
+        format_header_row(ws_entries, 1, headers)
+
+        for row_num, worklog in enumerate(worklogs, 2):
+            ws_entries.cell(row=row_num, column=1).value = worklog['issue_key']
+            ws_entries.cell(row=row_num, column=2).value = worklog['summary']
+            ws_entries.cell(row=row_num, column=3).value = worklog['issue_type']
+            ws_entries.cell(row=row_num, column=4).value = worklog['epic_link']
+            ws_entries.cell(row=row_num, column=5).value = worklog['author']
+            ws_entries.cell(row=row_num, column=6).value = worklog['author_email']
+            ws_entries.cell(row=row_num, column=7).value = worklog['time_spent']
+            ws_entries.cell(row=row_num, column=8).value = round(worklog['time_spent_seconds'] / 3600, 2)
+            ws_entries.cell(row=row_num, column=9).value = worklog['started']
+            ws_entries.cell(row=row_num, column=10).value = worklog.get('product_item', '')
+            ws_entries.cell(row=row_num, column=11).value = worklog.get('team', '')
+            ws_entries.cell(row=row_num, column=12).value = worklog['comment']
+            for col in range(1, 13):
+                ws_entries.cell(row=row_num, column=col).border = border
+        auto_size_columns(ws_entries)
+
+        # Save workbook
+        wb.save(filename)
+        print(f"Worklogs exported to Excel: {filename}")
 
     def generate_summary(self, worklogs):
         """Generate summary statistics"""
@@ -1268,6 +1574,30 @@ class JiraWorklogExtractor:
         <div class="section" id="year-month">
             <h2 class="section-title">Hours by Year and Month</h2>
 
+            <!-- Date Range Filter -->
+            <div style="background: white; padding: 20px; border-radius: 8px; margin-bottom: 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.1);">
+                <div style="display: flex; align-items: center; gap: 15px; flex-wrap: wrap;">
+                    <label style="font-weight: 600; color: #333;">Filter by Date:</label>
+                    <div style="display: flex; align-items: center; gap: 8px;">
+                        <label for="dateFrom" style="color: #666;">From:</label>
+                        <input type="month" id="dateFrom" style="padding: 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px;">
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 8px;">
+                        <label for="dateTo" style="color: #666;">To:</label>
+                        <input type="month" id="dateTo" style="padding: 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px;">
+                    </div>
+                    <button onclick="applyDateFilter()" style="background: #667eea; color: white; border: none; padding: 10px 20px; border-radius: 4px; cursor: pointer; font-size: 14px; font-weight: 600; transition: background 0.2s;">
+                        Apply Filter
+                    </button>
+                    <button onclick="resetDateFilter()" style="background: #6c757d; color: white; border: none; padding: 10px 20px; border-radius: 4px; cursor: pointer; font-size: 14px; font-weight: 600; transition: background 0.2s;">
+                        Reset
+                    </button>
+                    <div id="filteredTotal" style="margin-left: auto; font-weight: 600; color: #667eea; display: none;">
+                        Filtered Total: <span id="filteredHours">0</span>h
+                    </div>
+                </div>
+            </div>
+
             <!-- Bar Chart -->
             <div class="chart-container">
                 <canvas id="yearMonthChart" style="max-height: 400px;"></canvas>
@@ -1766,86 +2096,172 @@ class JiraWorklogExtractor:
             element.classList.toggle('active');
         }
 
-        // Year/Month Chart Data
-        const yearMonthLabels = """ + str([ym for ym, _ in year_month_sorted]) + """;
-        const yearMonthHours = """ + str([stats['hours'] for _, stats in year_month_sorted]) + """;
+        // Year/Month Chart Data - Store original data
+        const originalYearMonthLabels = """ + str([ym for ym, _ in year_month_sorted]) + """;
+        const originalYearMonthHours = """ + str([stats['hours'] for _, stats in year_month_sorted]) + """;
 
-        // Create the bar chart
-        const ctx = document.getElementById('yearMonthChart').getContext('2d');
-        new Chart(ctx, {
-            type: 'bar',
-            data: {
-                labels: yearMonthLabels,
-                datasets: [{
-                    label: 'Hours Logged',
-                    data: yearMonthHours,
-                    backgroundColor: 'rgba(102, 126, 234, 0.8)',
-                    borderColor: 'rgba(102, 126, 234, 1)',
-                    borderWidth: 2,
-                    borderRadius: 5,
-                    hoverBackgroundColor: 'rgba(118, 75, 162, 0.8)'
-                }]
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: true,
-                plugins: {
-                    legend: {
-                        display: false
-                    },
-                    title: {
-                        display: true,
-                        text: 'Hours Logged by Month',
-                        font: {
-                            size: 16,
-                            weight: 'bold'
-                        },
-                        padding: 20
-                    },
-                    tooltip: {
-                        callbacks: {
-                            label: function(context) {
-                                return 'Hours: ' + context.parsed.y.toFixed(2) + 'h';
-                            }
-                        }
-                    }
+        // Current chart instance
+        let yearMonthChart = null;
+
+        // Create the bar chart with initial data
+        function createYearMonthChart(labels, hours) {
+            const ctx = document.getElementById('yearMonthChart').getContext('2d');
+
+            // Destroy existing chart if it exists
+            if (yearMonthChart) {
+                yearMonthChart.destroy();
+            }
+
+            yearMonthChart = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: 'Hours Logged',
+                        data: hours,
+                        backgroundColor: 'rgba(102, 126, 234, 0.8)',
+                        borderColor: 'rgba(102, 126, 234, 1)',
+                        borderWidth: 2,
+                        borderRadius: 5,
+                        hoverBackgroundColor: 'rgba(118, 75, 162, 0.8)'
+                    }]
                 },
-                scales: {
-                    y: {
-                        beginAtZero: true,
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: true,
+                    plugins: {
+                        legend: {
+                            display: false
+                        },
                         title: {
                             display: true,
-                            text: 'Hours',
+                            text: 'Hours Logged by Month',
                             font: {
-                                size: 14,
+                                size: 16,
                                 weight: 'bold'
-                            }
+                            },
+                            padding: 20
                         },
-                        ticks: {
-                            callback: function(value) {
-                                return value.toFixed(0) + 'h';
+                        tooltip: {
+                            callbacks: {
+                                label: function(context) {
+                                    return 'Hours: ' + context.parsed.y.toFixed(2) + 'h';
+                                }
                             }
-                        },
-                        grid: {
-                            color: 'rgba(0, 0, 0, 0.05)'
                         }
                     },
-                    x: {
-                        title: {
-                            display: true,
-                            text: 'Year-Month',
-                            font: {
-                                size: 14,
-                                weight: 'bold'
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            title: {
+                                display: true,
+                                text: 'Hours',
+                                font: {
+                                    size: 14,
+                                    weight: 'bold'
+                                }
+                            },
+                            ticks: {
+                                callback: function(value) {
+                                    return value.toFixed(0) + 'h';
+                                }
+                            },
+                            grid: {
+                                color: 'rgba(0, 0, 0, 0.05)'
                             }
                         },
-                        grid: {
-                            display: false
+                        x: {
+                            title: {
+                                display: true,
+                                text: 'Year-Month',
+                                font: {
+                                    size: 14,
+                                    weight: 'bold'
+                                }
+                            },
+                            grid: {
+                                display: false
+                            }
                         }
                     }
                 }
+            });
+        }
+
+        // Date filter functions
+        function applyDateFilter() {
+            const fromInput = document.getElementById('dateFrom').value;
+            const toInput = document.getElementById('dateTo').value;
+
+            if (!fromInput && !toInput) {
+                alert('Please select at least one date (from or to)');
+                return;
             }
-        });
+
+            // Filter the data
+            const filteredLabels = [];
+            const filteredHours = [];
+            let totalFiltered = 0;
+
+            for (let i = 0; i < originalYearMonthLabels.length; i++) {
+                const label = originalYearMonthLabels[i];
+                const hours = originalYearMonthHours[i];
+
+                // Check if label is within range
+                const inRange = (!fromInput || label >= fromInput) && (!toInput || label <= toInput);
+
+                if (inRange) {
+                    filteredLabels.push(label);
+                    filteredHours.push(hours);
+                    totalFiltered += hours;
+                }
+            }
+
+            // Update chart with filtered data
+            createYearMonthChart(filteredLabels, filteredHours);
+
+            // Show filtered total
+            document.getElementById('filteredHours').textContent = totalFiltered.toFixed(2);
+            document.getElementById('filteredTotal').style.display = 'block';
+
+            // Save to localStorage
+            localStorage.setItem('dateFilterFrom', fromInput);
+            localStorage.setItem('dateFilterTo', toInput);
+        }
+
+        function resetDateFilter() {
+            // Clear inputs
+            document.getElementById('dateFrom').value = '';
+            document.getElementById('dateTo').value = '';
+
+            // Reset chart to original data
+            createYearMonthChart(originalYearMonthLabels, originalYearMonthHours);
+
+            // Hide filtered total
+            document.getElementById('filteredTotal').style.display = 'none';
+
+            // Clear localStorage
+            localStorage.removeItem('dateFilterFrom');
+            localStorage.removeItem('dateFilterTo');
+        }
+
+        // Load date filter from localStorage on page load
+        function loadDateFilter() {
+            const fromValue = localStorage.getItem('dateFilterFrom');
+            const toValue = localStorage.getItem('dateFilterTo');
+
+            if (fromValue || toValue) {
+                if (fromValue) document.getElementById('dateFrom').value = fromValue;
+                if (toValue) document.getElementById('dateTo').value = toValue;
+                applyDateFilter();
+            } else {
+                // Initialize chart with all data
+                createYearMonthChart(originalYearMonthLabels, originalYearMonthHours);
+            }
+        }
+
+        // Initialize chart on page load
+        loadDateFilter();
 
         // =============================================================================
         // TABLE FILTERING AND SORTING FUNCTIONALITY
@@ -2444,9 +2860,9 @@ Examples:
                         help='Log level: 1=standard, 2=debug (default: 1)')
 
     parser.add_argument('--format', '-f',
-                        choices=['csv', 'html', 'both'],
+                        choices=['csv', 'html', 'excel', 'both', 'all'],
                         default='both',
-                        help='Output format (default: both)')
+                        help='Output format: csv, html, excel, both (csv+html), or all (csv+html+excel) (default: both)')
 
     parser.add_argument('--version', '-v',
                         action='version',
@@ -2472,6 +2888,9 @@ def main():
     # Parse command-line arguments
     args = parse_arguments()
 
+    # Setup logging
+    logger = setup_logging(log_level=args.log_level)
+
     # Display configuration
     print(f"\n{'='*70}")
     print(f"Jira Worklog Extractor v{VERSION}")
@@ -2487,7 +2906,6 @@ def main():
     print(f"{'='*70}\n")
 
     # Track execution time
-    import time
     start_time = time.time()
 
     # Initialize extractor
@@ -2499,7 +2917,8 @@ def main():
         log_level=args.log_level,
         use_cache=not args.no_cache,
         cache_ttl=args.cache_ttl,
-        skip_validation=args.skip_validation
+        skip_validation=args.skip_validation,
+        logger=logger
     )
 
     # Collect all related issues
@@ -2528,12 +2947,14 @@ def main():
     base_filename = f'{args.project.lower()}_worklogs_{timestamp}'
 
     # Export based on format selection
-    if args.format in ['csv', 'both']:
+    print("\nExporting results...")
+
+    if args.format in ['csv', 'both', 'all']:
         csv_filename = output_dir / f'{base_filename}.csv'
         extractor.export_to_csv(worklogs, str(csv_filename))
         print(f"  - CSV: {csv_filename}")
 
-    if args.format in ['html', 'both']:
+    if args.format in ['html', 'both', 'all']:
         html_filename = output_dir / f'{base_filename}.html'
         total_time = time.time() - start_time
         timing_info = {
@@ -2545,6 +2966,11 @@ def main():
         }
         extractor.export_to_html(worklogs, str(html_filename), timing_info)
         print(f"  - HTML Report: {html_filename}")
+
+    if args.format in ['excel', 'all']:
+        excel_filename = output_dir / f'{base_filename}.xlsx'
+        extractor.export_to_excel(worklogs, str(excel_filename))
+        print(f"  - Excel: {excel_filename}")
 
     total_execution_time = time.time() - start_time
     print(f"\nDone! Results exported to {output_dir}")
