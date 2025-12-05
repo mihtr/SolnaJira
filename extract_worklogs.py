@@ -14,6 +14,10 @@ import os
 import argparse
 from tqdm import tqdm
 from dotenv import load_dotenv
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import pickle
+import hashlib
+import time
 
 # Version
 VERSION = "1.0.0"
@@ -30,16 +34,74 @@ ERP_ACTIVITY_FILTER = os.getenv('ERP_ACTIVITY_FILTER', 'ProjectTask-000000071187
 LOG_LEVEL = int(os.getenv('LOG_LEVEL', '1'))  # 1 = standard, 2 = debug (shows [DEBUG] messages)
 
 class JiraWorklogExtractor:
-    def __init__(self, jira_url, api_token, project_key=None, erp_activity_filter=None, log_level=1):
+    def __init__(self, jira_url, api_token, project_key=None, erp_activity_filter=None, log_level=1, cache_dir='.cache', use_cache=True, cache_ttl=3600):
         self.jira_url = jira_url.rstrip('/')
         self.api_token = api_token
         self.project_key = project_key or PROJECT_KEY
         self.erp_activity_filter = erp_activity_filter or ERP_ACTIVITY_FILTER
         self.log_level = log_level
+        self.use_cache = use_cache
+        self.cache_ttl = cache_ttl  # Cache time-to-live in seconds (default: 1 hour)
         self.headers = {
             "Accept": "application/json",
             "Authorization": f"Bearer {api_token}"
         }
+
+        # Set up cache directory
+        self.cache_dir = Path(cache_dir)
+        if self.use_cache:
+            self.cache_dir.mkdir(exist_ok=True)
+            if self.log_level >= 2:
+                print(f"[DEBUG] Cache enabled: {self.cache_dir.absolute()} (TTL: {cache_ttl}s)")
+
+    def _get_cache_key(self, prefix, identifier):
+        """Generate a cache key from prefix and identifier"""
+        # Create hash of identifier to handle long strings
+        hash_obj = hashlib.md5(str(identifier).encode())
+        return f"{prefix}_{hash_obj.hexdigest()}.pkl"
+
+    def _get_from_cache(self, cache_key):
+        """Retrieve data from cache if valid"""
+        if not self.use_cache:
+            return None
+
+        cache_file = self.cache_dir / cache_key
+        if not cache_file.exists():
+            return None
+
+        try:
+            # Check if cache is expired
+            file_age = time.time() - cache_file.stat().st_mtime
+            if file_age > self.cache_ttl:
+                if self.log_level >= 2:
+                    print(f"[DEBUG] Cache expired: {cache_key} (age: {file_age:.0f}s)")
+                cache_file.unlink()  # Delete expired cache
+                return None
+
+            with open(cache_file, 'rb') as f:
+                data = pickle.load(f)
+                if self.log_level >= 2:
+                    print(f"[DEBUG] Cache hit: {cache_key}")
+                return data
+        except Exception as e:
+            if self.log_level >= 1:
+                print(f"  Warning: Failed to read cache {cache_key}: {e}")
+            return None
+
+    def _save_to_cache(self, cache_key, data):
+        """Save data to cache"""
+        if not self.use_cache:
+            return
+
+        cache_file = self.cache_dir / cache_key
+        try:
+            with open(cache_file, 'wb') as f:
+                pickle.dump(data, f)
+                if self.log_level >= 2:
+                    print(f"[DEBUG] Cache saved: {cache_key}")
+        except Exception as e:
+            if self.log_level >= 1:
+                print(f"  Warning: Failed to save cache {cache_key}: {e}")
 
     def search_issues(self, jql, fields=None, max_results=100):
         """Search for issues using JQL"""
@@ -132,7 +194,13 @@ class JiraWorklogExtractor:
         return linked_issues
 
     def get_worklogs(self, issue_key):
-        """Get all worklogs for an issue"""
+        """Get all worklogs for an issue (with caching)"""
+        # Check cache first
+        cache_key = self._get_cache_key("worklogs", issue_key)
+        cached_data = self._get_from_cache(cache_key)
+        if cached_data is not None:
+            return cached_data
+
         url = f"{self.jira_url}/rest/api/2/issue/{issue_key}/worklog"
 
         if self.log_level >= 2:
@@ -153,6 +221,9 @@ class JiraWorklogExtractor:
         worklogs = data.get('worklogs', [])
         if worklogs and LOG_LEVEL >= 2:
             print(f"[DEBUG] Found {len(worklogs)} worklog(s) for {issue_key}")
+
+        # Save to cache
+        self._save_to_cache(cache_key, worklogs)
 
         return worklogs
 
@@ -261,7 +332,13 @@ class JiraWorklogExtractor:
         return sorted(all_issue_keys)
 
     def get_issue_metadata(self, issue_key):
-        """Get issue type, epic link, and summary for an issue"""
+        """Get issue type, epic link, and summary for an issue (with caching)"""
+        # Check cache first
+        cache_key = self._get_cache_key("metadata", issue_key)
+        cached_data = self._get_from_cache(cache_key)
+        if cached_data is not None:
+            return cached_data
+
         url = f"{self.jira_url}/rest/api/2/issue/{issue_key}"
         params = {"fields": "issuetype,customfield_10014,summary"}  # customfield_10014 is typically Epic Link
 
@@ -269,64 +346,96 @@ class JiraWorklogExtractor:
         response.raise_for_status()
         data = response.json()
 
-        return {
+        metadata = {
             'issue_type': data.get('fields', {}).get('issuetype', {}).get('name', 'Unknown'),
             'epic_link': data.get('fields', {}).get('customfield_10014', ''),
             'summary': data.get('fields', {}).get('summary', '')
         }
 
-    def extract_worklogs(self, issue_keys):
-        """Extract worklogs from all issues"""
+        # Save to cache
+        self._save_to_cache(cache_key, metadata)
+
+        return metadata
+
+    def _extract_issue_worklogs(self, issue_key, issue_metadata_cache):
+        """Extract worklogs from a single issue (helper for parallel execution)"""
+        result_worklogs = []
+        try:
+            # Get issue metadata
+            if issue_key not in issue_metadata_cache:
+                issue_metadata_cache[issue_key] = self.get_issue_metadata(issue_key)
+
+            metadata = issue_metadata_cache[issue_key]
+
+            worklogs = self.get_worklogs(issue_key)
+            for worklog in worklogs:
+                # Handle comment field - can be string, dict, or None
+                comment = ''
+                if worklog.get('comment'):
+                    comment_field = worklog['comment']
+                    if isinstance(comment_field, str):
+                        comment = comment_field
+                    elif isinstance(comment_field, dict):
+                        # Jira Atlassian Document Format
+                        try:
+                            content = comment_field.get('content', [])
+                            if content and len(content) > 0:
+                                first_block = content[0]
+                                if isinstance(first_block, dict):
+                                    block_content = first_block.get('content', [])
+                                    if block_content and len(block_content) > 0:
+                                        text_node = block_content[0]
+                                        if isinstance(text_node, dict):
+                                            comment = text_node.get('text', '')
+                        except (KeyError, IndexError, AttributeError):
+                            comment = str(comment_field)
+
+                result_worklogs.append({
+                    'issue_key': issue_key,
+                    'issue_type': metadata['issue_type'],
+                    'epic_link': metadata['epic_link'],
+                    'summary': metadata['summary'],
+                    'worklog_id': worklog['id'],
+                    'author': worklog['author'].get('displayName', 'Unknown'),
+                    'author_email': worklog['author'].get('emailAddress', ''),
+                    'time_spent': worklog.get('timeSpent', ''),
+                    'time_spent_seconds': worklog.get('timeSpentSeconds', 0),
+                    'started': worklog.get('started', ''),
+                    'comment': comment
+                })
+        except Exception as e:
+            if self.log_level >= 1:
+                print(f"  Error extracting worklogs from {issue_key}: {e}")
+
+        return result_worklogs
+
+    def extract_worklogs(self, issue_keys, max_workers=10):
+        """Extract worklogs from all issues using parallel requests"""
         all_worklogs = []
         issue_metadata_cache = {}
 
-        print(f"\nExtracting worklogs from {len(issue_keys)} issues...")
-        for issue_key in tqdm(issue_keys, desc="Extracting worklogs", unit="issue"):
-            try:
-                # Get issue metadata
-                if issue_key not in issue_metadata_cache:
-                    issue_metadata_cache[issue_key] = self.get_issue_metadata(issue_key)
+        print(f"\nExtracting worklogs from {len(issue_keys)} issues (using {max_workers} parallel workers)...")
 
-                metadata = issue_metadata_cache[issue_key]
+        # Use ThreadPoolExecutor for parallel API calls
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # Submit all tasks
+            future_to_key = {
+                executor.submit(self._extract_issue_worklogs, key, issue_metadata_cache): key
+                for key in issue_keys
+            }
 
-                worklogs = self.get_worklogs(issue_key)
-                for worklog in worklogs:
-                    # Handle comment field - can be string, dict, or None
-                    comment = ''
-                    if worklog.get('comment'):
-                        comment_field = worklog['comment']
-                        if isinstance(comment_field, str):
-                            comment = comment_field
-                        elif isinstance(comment_field, dict):
-                            # Jira Atlassian Document Format
-                            try:
-                                content = comment_field.get('content', [])
-                                if content and len(content) > 0:
-                                    first_block = content[0]
-                                    if isinstance(first_block, dict):
-                                        block_content = first_block.get('content', [])
-                                        if block_content and len(block_content) > 0:
-                                            text_node = block_content[0]
-                                            if isinstance(text_node, dict):
-                                                comment = text_node.get('text', '')
-                            except (KeyError, IndexError, AttributeError):
-                                comment = str(comment_field)
-
-                    all_worklogs.append({
-                        'issue_key': issue_key,
-                        'issue_type': metadata['issue_type'],
-                        'epic_link': metadata['epic_link'],
-                        'summary': metadata['summary'],
-                        'worklog_id': worklog['id'],
-                        'author': worklog['author'].get('displayName', 'Unknown'),
-                        'author_email': worklog['author'].get('emailAddress', ''),
-                        'time_spent': worklog.get('timeSpent', ''),
-                        'time_spent_seconds': worklog.get('timeSpentSeconds', 0),
-                        'started': worklog.get('started', ''),
-                        'comment': comment
-                    })
-            except Exception as e:
-                print(f"  Error extracting worklogs from {issue_key}: {e}")
+            # Process results as they complete with progress bar
+            for future in tqdm(as_completed(future_to_key),
+                             total=len(issue_keys),
+                             desc="Extracting worklogs",
+                             unit="issue"):
+                try:
+                    worklogs = future.result()
+                    all_worklogs.extend(worklogs)
+                except Exception as e:
+                    issue_key = future_to_key[future]
+                    if self.log_level >= 1:
+                        print(f"  Error processing {issue_key}: {e}")
 
         print(f"\nTotal worklogs extracted: {len(all_worklogs)}")
         return all_worklogs
@@ -387,7 +496,7 @@ class JiraWorklogExtractor:
         for author, stats in sorted(by_author.items(), key=lambda x: x[1]['hours'], reverse=True):
             print(f"{author:30s} {stats['hours']:8.2f} hours  ({stats['entries']} entries)")
 
-    def export_to_html(self, worklogs, filename='worklogs_report.html'):
+    def export_to_html(self, worklogs, filename='worklogs_report.html', timing_info=None):
         """Export worklogs to an interactive HTML report"""
         if not worklogs:
             print("No worklogs to export")
@@ -699,8 +808,123 @@ class JiraWorklogExtractor:
             </div>
         </div>
 
+        <!-- Analytics Section -->"""
+
+        # Calculate advanced analytics
+        # Most time-consuming issues
+        issues_by_hours = sorted(by_issue.items(), key=lambda x: x[1]['hours'], reverse=True)
+        top_issue = issues_by_hours[0] if issues_by_hours else None
+
+        # Longest duration issues (time from first to last worklog)
+        issue_duration = {}
+        for issue_key in by_issue.keys():
+            issue_worklogs = [w for w in worklogs if w['issue_key'] == issue_key]
+            dates = [datetime.fromisoformat(w['started'].replace('Z', '+00:00')) for w in issue_worklogs if w['started']]
+            if len(dates) > 1:
+                duration_days = (max(dates) - min(dates)).days
+                issue_duration[issue_key] = duration_days
+
+        longest_issue = max(issue_duration.items(), key=lambda x: x[1]) if issue_duration else None
+
+        # Average hours per contributor
+        avg_hours_per_contributor = total_hours / len(by_author) if len(by_author) > 0 else 0
+
+        # Most collaborative issue (most contributors)
+        most_collaborative = max(by_issue.items(), key=lambda x: len(x[1]['authors'])) if by_issue else None
+
+        # Issue type distribution
+        type_distribution = defaultdict(lambda: {'count': 0, 'hours': 0})
+        for issue_key, stats in by_issue.items():
+            issue_type = stats['issue_type']
+            type_distribution[issue_type]['count'] += 1
+            type_distribution[issue_type]['hours'] += stats['hours']
+
+        most_common_type = max(type_distribution.items(), key=lambda x: x[1]['count']) if type_distribution else None
+
+        # Time period analysis
+        all_dates = [datetime.fromisoformat(w['started'].replace('Z', '+00:00')) for w in worklogs if w['started']]
+        if all_dates:
+            first_date = min(all_dates)
+            last_date = max(all_dates)
+            total_days = (last_date - first_date).days + 1
+            avg_hours_per_day = total_hours / total_days if total_days > 0 else 0
+        else:
+            first_date = last_date = None
+            total_days = avg_hours_per_day = 0
+
+        html += f"""
+        <div class="section">
+            <h2 class="section-title">📊 Insights & Analytics</h2>
+            <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 25px; border-radius: 12px; color: white; margin-bottom: 20px;">
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 20px;">
+                    <div style="background: rgba(255, 255, 255, 0.15); padding: 15px; border-radius: 8px; backdrop-filter: blur(10px);">
+                        <div style="font-size: 0.9em; opacity: 0.9; margin-bottom: 5px;">⏱️ Time Period</div>
+                        <div style="font-size: 1.3em; font-weight: bold;">{total_days} days</div>
+                        <div style="font-size: 0.85em; opacity: 0.8; margin-top: 5px;">
+                            {first_date.strftime('%Y-%m-%d') if first_date else 'N/A'} to {last_date.strftime('%Y-%m-%d') if last_date else 'N/A'}
+                        </div>
+                    </div>
+                    <div style="background: rgba(255, 255, 255, 0.15); padding: 15px; border-radius: 8px; backdrop-filter: blur(10px);">
+                        <div style="font-size: 0.9em; opacity: 0.9; margin-bottom: 5px;">📈 Avg. Hours/Day</div>
+                        <div style="font-size: 1.3em; font-weight: bold;">{avg_hours_per_day:.1f}h</div>
+                        <div style="font-size: 0.85em; opacity: 0.8; margin-top: 5px;">Active working days</div>
+                    </div>
+                    <div style="background: rgba(255, 255, 255, 0.15); padding: 15px; border-radius: 8px; backdrop-filter: blur(10px);">
+                        <div style="font-size: 0.9em; opacity: 0.9; margin-bottom: 5px;">👥 Avg. Hours/Contributor</div>
+                        <div style="font-size: 1.3em; font-weight: bold;">{avg_hours_per_contributor:.1f}h</div>
+                        <div style="font-size: 0.85em; opacity: 0.8; margin-top: 5px;">{len(by_author)} total contributors</div>
+                    </div>
+                </div>
+            </div>
+
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(350px, 1fr)); gap: 20px; margin-top: 20px;">
+                <!-- Most Time Consuming Issue -->
+                <div style="background: white; padding: 20px; border-radius: 8px; border-left: 4px solid #667eea; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+                    <div style="font-size: 1.1em; font-weight: bold; color: #667eea; margin-bottom: 10px;">🔥 Most Time-Consuming Issue</div>
+                    {f'<div style="font-weight: bold; margin-bottom: 5px;">{make_issue_link(top_issue[0])}</div>' if top_issue else '<div>N/A</div>'}
+                    {f'<div style="color: #666; font-size: 0.9em; margin-bottom: 8px;">{top_issue[1]["summary"][:80]}...</div>' if top_issue else ''}
+                    {f'<div style="font-size: 1.2em; color: #764ba2; font-weight: bold;">{top_issue[1]["hours"]:.1f} hours</div>' if top_issue else ''}
+                    {f'<div style="font-size: 0.85em; color: #666; margin-top: 5px;">{top_issue[1]["entries"]} worklog entries • {len(top_issue[1]["authors"])} contributors</div>' if top_issue else ''}
+                </div>
+
+                <!-- Longest Duration Issue -->
+                <div style="background: white; padding: 20px; border-radius: 8px; border-left: 4px solid #f59e0b; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+                    <div style="font-size: 1.1em; font-weight: bold; color: #f59e0b; margin-bottom: 10px;">⏳ Longest Active Issue</div>
+                    {f'<div style="font-weight: bold; margin-bottom: 5px;">{make_issue_link(longest_issue[0])}</div>' if longest_issue else '<div>N/A</div>'}
+                    {f'<div style="color: #666; font-size: 0.9em; margin-bottom: 8px;">{by_issue[longest_issue[0]]["summary"][:80]}...</div>' if longest_issue else ''}
+                    {f'<div style="font-size: 1.2em; color: #f59e0b; font-weight: bold;">{longest_issue[1]} days</div>' if longest_issue else ''}
+                    {f'<div style="font-size: 0.85em; color: #666; margin-top: 5px;">{by_issue[longest_issue[0]]["hours"]:.1f} hours logged • Type: {by_issue[longest_issue[0]]["issue_type"]}</div>' if longest_issue else ''}
+                </div>
+
+                <!-- Most Collaborative Issue -->
+                <div style="background: white; padding: 20px; border-radius: 8px; border-left: 4px solid #10b981; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+                    <div style="font-size: 1.1em; font-weight: bold; color: #10b981; margin-bottom: 10px;">🤝 Most Collaborative Issue</div>
+                    {f'<div style="font-weight: bold; margin-bottom: 5px;">{make_issue_link(most_collaborative[0])}</div>' if most_collaborative else '<div>N/A</div>'}
+                    {f'<div style="color: #666; font-size: 0.9em; margin-bottom: 8px;">{most_collaborative[1]["summary"][:80]}...</div>' if most_collaborative else ''}
+                    {f'<div style="font-size: 1.2em; color: #10b981; font-weight: bold;">{len(most_collaborative[1]["authors"])} contributors</div>' if most_collaborative else ''}
+                    {f'<div style="font-size: 0.85em; color: #666; margin-top: 5px;">{most_collaborative[1]["hours"]:.1f} hours • {most_collaborative[1]["entries"]} entries</div>' if most_collaborative else ''}
+                </div>
+
+                <!-- Most Common Issue Type -->
+                <div style="background: white; padding: 20px; border-radius: 8px; border-left: 4px solid #8b5cf6; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+                    <div style="font-size: 1.1em; font-weight: bold; color: #8b5cf6; margin-bottom: 10px;">📋 Most Common Issue Type</div>
+                    {f'<div style="font-size: 1.2em; color: #8b5cf6; font-weight: bold; margin-bottom: 5px;">{most_common_type[0]}</div>' if most_common_type else '<div>N/A</div>'}
+                    {f'<div style="font-size: 0.9em; color: #666; margin-bottom: 8px;">{most_common_type[1]["count"]} issues of this type</div>' if most_common_type else ''}
+                    {f'<div style="font-size: 1.1em; color: #333; font-weight: bold;">{most_common_type[1]["hours"]:.1f} hours</div>' if most_common_type else ''}
+                    {f'<div style="font-size: 0.85em; color: #666; margin-top: 5px;">{(most_common_type[1]["count"] / len(by_issue) * 100):.1f}% of all issues</div>' if most_common_type else ''}
+                </div>
+            </div>
+        </div>
+
         <div class="section">
             <h2 class="section-title">Hours by Year and Month</h2>
+
+            <!-- Bar Chart -->
+            <div class="chart-container">
+                <canvas id="yearMonthChart" style="max-height: 400px;"></canvas>
+            </div>
+
+            <!-- Data Table -->
             <table>
                 <thead>
                     <tr>
@@ -899,15 +1123,112 @@ class JiraWorklogExtractor:
         </div>
 
         <div class="footer">
-            Generated by Jira Worklog Extractor
+            Generated by Jira Worklog Extractor"""
+
+        # Add timing information if available
+        if timing_info:
+            html += f"""<br>
+            <div style="margin-top: 10px; font-size: 0.9em; opacity: 0.8;">
+                Execution Time: {timing_info['total_time']:.2f}s
+                (Collection: {timing_info['collection_time']:.2f}s,
+                Extraction: {timing_info['extraction_time']:.2f}s) |
+                {timing_info['issue_count']} issues,
+                {timing_info['worklog_count']} worklogs
+            </div>"""
+
+        html += """
         </div>
     </div>
+
+    <!-- Chart.js Library -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 
     <script>
         function toggleDetails(id) {
             const element = document.getElementById(id);
             element.classList.toggle('active');
         }
+
+        // Year/Month Chart Data
+        const yearMonthLabels = """ + str([ym for ym, _ in year_month_sorted]) + """;
+        const yearMonthHours = """ + str([stats['hours'] for _, stats in year_month_sorted]) + """;
+
+        // Create the bar chart
+        const ctx = document.getElementById('yearMonthChart').getContext('2d');
+        new Chart(ctx, {
+            type: 'bar',
+            data: {
+                labels: yearMonthLabels,
+                datasets: [{
+                    label: 'Hours Logged',
+                    data: yearMonthHours,
+                    backgroundColor: 'rgba(102, 126, 234, 0.8)',
+                    borderColor: 'rgba(102, 126, 234, 1)',
+                    borderWidth: 2,
+                    borderRadius: 5,
+                    hoverBackgroundColor: 'rgba(118, 75, 162, 0.8)'
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: true,
+                plugins: {
+                    legend: {
+                        display: false
+                    },
+                    title: {
+                        display: true,
+                        text: 'Hours Logged by Month',
+                        font: {
+                            size: 16,
+                            weight: 'bold'
+                        },
+                        padding: 20
+                    },
+                    tooltip: {
+                        callbacks: {
+                            label: function(context) {
+                                return 'Hours: ' + context.parsed.y.toFixed(2) + 'h';
+                            }
+                        }
+                    }
+                },
+                scales: {
+                    y: {
+                        beginAtZero: true,
+                        title: {
+                            display: true,
+                            text: 'Hours',
+                            font: {
+                                size: 14,
+                                weight: 'bold'
+                            }
+                        },
+                        ticks: {
+                            callback: function(value) {
+                                return value.toFixed(0) + 'h';
+                            }
+                        },
+                        grid: {
+                            color: 'rgba(0, 0, 0, 0.05)'
+                        }
+                    },
+                    x: {
+                        title: {
+                            display: true,
+                            text: 'Year-Month',
+                            font: {
+                                size: 14,
+                                weight: 'bold'
+                            }
+                        },
+                        grid: {
+                            display: false
+                        }
+                    }
+                }
+            }
+        });
     </script>
 </body>
 </html>
@@ -975,6 +1296,15 @@ Examples:
                         action='version',
                         version=f'%(prog)s {VERSION}')
 
+    parser.add_argument('--no-cache',
+                        action='store_true',
+                        help='Disable caching of API responses')
+
+    parser.add_argument('--cache-ttl',
+                        type=int,
+                        default=3600,
+                        help='Cache time-to-live in seconds (default: 3600 = 1 hour)')
+
     return parser.parse_args()
 
 
@@ -993,7 +1323,12 @@ def main():
     print(f"  Output Directory: {args.output_dir}")
     print(f"  Log Level: {args.log_level}")
     print(f"  Format: {args.format}")
+    print(f"  Cache: {'Disabled' if args.no_cache else f'Enabled (TTL: {args.cache_ttl}s)'}")
     print(f"{'='*70}\n")
+
+    # Track execution time
+    import time
+    start_time = time.time()
 
     # Initialize extractor
     extractor = JiraWorklogExtractor(
@@ -1001,18 +1336,24 @@ def main():
         api_token=args.jira_token,
         project_key=args.project,
         erp_activity_filter=args.erp_activity,
-        log_level=args.log_level
+        log_level=args.log_level,
+        use_cache=not args.no_cache,
+        cache_ttl=args.cache_ttl
     )
 
     # Collect all related issues
+    collection_start = time.time()
     issue_keys = extractor.collect_all_related_issues()
+    collection_time = time.time() - collection_start
 
     if not issue_keys:
         print("No issues found matching the criteria")
         return
 
     # Extract worklogs
+    extraction_start = time.time()
     worklogs = extractor.extract_worklogs(issue_keys)
+    extraction_time = time.time() - extraction_start
 
     # Generate summary
     extractor.generate_summary(worklogs)
@@ -1033,10 +1374,20 @@ def main():
 
     if args.format in ['html', 'both']:
         html_filename = output_dir / f'{base_filename}.html'
-        extractor.export_to_html(worklogs, str(html_filename))
+        total_time = time.time() - start_time
+        timing_info = {
+            'collection_time': collection_time,
+            'extraction_time': extraction_time,
+            'total_time': total_time,
+            'issue_count': len(issue_keys),
+            'worklog_count': len(worklogs)
+        }
+        extractor.export_to_html(worklogs, str(html_filename), timing_info)
         print(f"  - HTML Report: {html_filename}")
 
+    total_execution_time = time.time() - start_time
     print(f"\nDone! Results exported to {output_dir}")
+    print(f"Total execution time: {total_execution_time:.2f}s")
 
 
 if __name__ == "__main__":
