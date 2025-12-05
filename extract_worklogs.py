@@ -864,6 +864,34 @@ class JiraWorklogExtractor:
             font-size: 0.9em;
         }}
 
+        .nav-menu {{
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            padding: 20px 40px;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 15px;
+            justify-content: center;
+            align-items: center;
+        }}
+
+        .nav-menu a {{
+            color: white;
+            text-decoration: none;
+            padding: 10px 20px;
+            background: rgba(255, 255, 255, 0.2);
+            border-radius: 25px;
+            font-size: 0.9em;
+            font-weight: 500;
+            transition: all 0.3s;
+            backdrop-filter: blur(10px);
+        }}
+
+        .nav-menu a:hover {{
+            background: rgba(255, 255, 255, 0.3);
+            transform: translateY(-2px);
+            box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+        }}
+
         @media print {{
             body {{
                 background: white;
@@ -873,6 +901,9 @@ class JiraWorklogExtractor:
             }}
             .worklog-details {{
                 display: block !important;
+            }}
+            .nav-menu {{
+                display: none;
             }}
         }}
     </style>
@@ -903,6 +934,19 @@ class JiraWorklogExtractor:
                 <div class="number">{len(by_issue)}</div>
                 <div class="label">Issues</div>
             </div>
+        </div>
+
+        <!-- Navigation Menu -->
+        <div class="nav-menu">
+            <a href="#insights">📊 Insights</a>
+            <a href="#year-month">📅 By Year/Month</a>
+            <a href="#product-item">📦 By Product Item</a>
+            <a href="#component">🧩 By Component</a>
+            <a href="#label">🏷️ By Label</a>
+            <a href="#team">👥 By Team</a>
+            <a href="#author">✍️ By Author</a>
+            <a href="#issue">🎯 By Issue</a>
+            <a href="#all-entries">📋 All Entries</a>
         </div>
 
         <!-- Analytics Section -->"""
@@ -950,7 +994,7 @@ class JiraWorklogExtractor:
             total_days = avg_hours_per_day = 0
 
         html += f"""
-        <div class="section">
+        <div class="section" id="insights">
             <h2 class="section-title">📊 Insights & Analytics</h2>
             <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 25px; border-radius: 12px; color: white; margin-bottom: 20px;">
                 <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 20px;">
@@ -1013,7 +1057,7 @@ class JiraWorklogExtractor:
             </div>
         </div>
 
-        <div class="section">
+        <div class="section" id="year-month">
             <h2 class="section-title">Hours by Year and Month</h2>
 
             <!-- Bar Chart -->
@@ -1058,7 +1102,171 @@ class JiraWorklogExtractor:
             </table>
         </div>
 
-        <div class="section">
+        <div class="section" id="product-item">
+            <h2 class="section-title">Hours by Product Item</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Product Item</th>
+                        <th>Hours</th>
+                        <th>Entries</th>
+                        <th>Issues</th>
+                        <th>% of Total</th>
+                        <th>Distribution</th>
+                    </tr>
+                </thead>
+                <tbody>
+"""
+
+        for product_item, stats in product_items_sorted:
+            percentage = (stats['hours'] / total_hours * 100) if total_hours > 0 else 0
+            issue_count = len(stats['issues'])
+            html += f"""
+                    <tr>
+                        <td>{product_item}</td>
+                        <td>{stats['hours']:.2f}h</td>
+                        <td>{stats['entries']}</td>
+                        <td>{issue_count}</td>
+                        <td>{percentage:.1f}%</td>
+                        <td>
+                            <div class="progress-bar">
+                                <div class="progress-fill" style="width: {percentage}%">
+                                    {percentage:.1f}%
+                                </div>
+                            </div>
+                        </td>
+                    </tr>
+"""
+
+        html += """
+                </tbody>
+            </table>
+        </div>
+
+        <div class="section" id="component">
+            <h2 class="section-title">Hours by Component</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Component</th>
+                        <th>Hours</th>
+                        <th>Entries</th>
+                        <th>Issues</th>
+                        <th>% of Total</th>
+                        <th>Distribution</th>
+                    </tr>
+                </thead>
+                <tbody>
+"""
+
+        for component, stats in components_sorted:
+            percentage = (stats['hours'] / total_hours * 100) if total_hours > 0 else 0
+            issue_count = len(stats['issues'])
+            html += f"""
+                    <tr>
+                        <td>{component}</td>
+                        <td>{stats['hours']:.2f}h</td>
+                        <td>{stats['entries']}</td>
+                        <td>{issue_count}</td>
+                        <td>{percentage:.1f}%</td>
+                        <td>
+                            <div class="progress-bar">
+                                <div class="progress-fill" style="width: {percentage}%">
+                                    {percentage:.1f}%
+                                </div>
+                            </div>
+                        </td>
+                    </tr>
+"""
+
+        html += """
+                </tbody>
+            </table>
+        </div>
+
+        <div class="section" id="label">
+            <h2 class="section-title">Hours by Label</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Label</th>
+                        <th>Hours</th>
+                        <th>Entries</th>
+                        <th>Issues</th>
+                        <th>% of Total</th>
+                        <th>Distribution</th>
+                    </tr>
+                </thead>
+                <tbody>
+"""
+
+        for label, stats in labels_sorted:
+            percentage = (stats['hours'] / total_hours * 100) if total_hours > 0 else 0
+            issue_count = len(stats['issues'])
+            html += f"""
+                    <tr>
+                        <td>{label}</td>
+                        <td>{stats['hours']:.2f}h</td>
+                        <td>{stats['entries']}</td>
+                        <td>{issue_count}</td>
+                        <td>{percentage:.1f}%</td>
+                        <td>
+                            <div class="progress-bar">
+                                <div class="progress-fill" style="width: {percentage}%">
+                                    {percentage:.1f}%
+                                </div>
+                            </div>
+                        </td>
+                    </tr>
+"""
+
+        html += """
+                </tbody>
+            </table>
+        </div>
+
+        <div class="section" id="team">
+            <h2 class="section-title">Hours by Team</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Team</th>
+                        <th>Hours</th>
+                        <th>Entries</th>
+                        <th>Issues</th>
+                        <th>% of Total</th>
+                        <th>Distribution</th>
+                    </tr>
+                </thead>
+                <tbody>
+"""
+
+        for team, stats in teams_sorted:
+            percentage = (stats['hours'] / total_hours * 100) if total_hours > 0 else 0
+            issue_count = len(stats['issues'])
+            html += f"""
+                    <tr>
+                        <td>{team}</td>
+                        <td>{stats['hours']:.2f}h</td>
+                        <td>{stats['entries']}</td>
+                        <td>{issue_count}</td>
+                        <td>{percentage:.1f}%</td>
+                        <td>
+                            <div class="progress-bar">
+                                <div class="progress-fill" style="width: {percentage}%">
+                                    {percentage:.1f}%
+                                </div>
+                            </div>
+                        </td>
+                    </tr>
+"""
+
+        html += """
+                </tbody>
+            </table>
+        </div>
+
+        <div class="section" id="author">
             <h2 class="section-title">Hours by Author</h2>
             <table>
                 <thead>
@@ -1126,7 +1334,7 @@ class JiraWorklogExtractor:
             </table>
         </div>
 
-        <div class="section">
+        <div class="section" id="issue">
             <h2 class="section-title">Hours by Issue</h2>
             <table>
                 <thead>
@@ -1176,171 +1384,7 @@ class JiraWorklogExtractor:
             </table>
         </div>
 
-        <div class="section">
-            <h2 class="section-title">Hours by Product Item</h2>
-            <table>
-                <thead>
-                    <tr>
-                        <th>Product Item</th>
-                        <th>Hours</th>
-                        <th>Entries</th>
-                        <th>Issues</th>
-                        <th>% of Total</th>
-                        <th>Distribution</th>
-                    </tr>
-                </thead>
-                <tbody>
-"""
-
-        for product_item, stats in product_items_sorted:
-            percentage = (stats['hours'] / total_hours * 100) if total_hours > 0 else 0
-            issue_count = len(stats['issues'])
-            html += f"""
-                    <tr>
-                        <td>{product_item}</td>
-                        <td>{stats['hours']:.2f}h</td>
-                        <td>{stats['entries']}</td>
-                        <td>{issue_count}</td>
-                        <td>{percentage:.1f}%</td>
-                        <td>
-                            <div class="progress-bar">
-                                <div class="progress-fill" style="width: {percentage}%">
-                                    {percentage:.1f}%
-                                </div>
-                            </div>
-                        </td>
-                    </tr>
-"""
-
-        html += """
-                </tbody>
-            </table>
-        </div>
-
-        <div class="section">
-            <h2 class="section-title">Hours by Component</h2>
-            <table>
-                <thead>
-                    <tr>
-                        <th>Component</th>
-                        <th>Hours</th>
-                        <th>Entries</th>
-                        <th>Issues</th>
-                        <th>% of Total</th>
-                        <th>Distribution</th>
-                    </tr>
-                </thead>
-                <tbody>
-"""
-
-        for component, stats in components_sorted:
-            percentage = (stats['hours'] / total_hours * 100) if total_hours > 0 else 0
-            issue_count = len(stats['issues'])
-            html += f"""
-                    <tr>
-                        <td>{component}</td>
-                        <td>{stats['hours']:.2f}h</td>
-                        <td>{stats['entries']}</td>
-                        <td>{issue_count}</td>
-                        <td>{percentage:.1f}%</td>
-                        <td>
-                            <div class="progress-bar">
-                                <div class="progress-fill" style="width: {percentage}%">
-                                    {percentage:.1f}%
-                                </div>
-                            </div>
-                        </td>
-                    </tr>
-"""
-
-        html += """
-                </tbody>
-            </table>
-        </div>
-
-        <div class="section">
-            <h2 class="section-title">Hours by Label</h2>
-            <table>
-                <thead>
-                    <tr>
-                        <th>Label</th>
-                        <th>Hours</th>
-                        <th>Entries</th>
-                        <th>Issues</th>
-                        <th>% of Total</th>
-                        <th>Distribution</th>
-                    </tr>
-                </thead>
-                <tbody>
-"""
-
-        for label, stats in labels_sorted:
-            percentage = (stats['hours'] / total_hours * 100) if total_hours > 0 else 0
-            issue_count = len(stats['issues'])
-            html += f"""
-                    <tr>
-                        <td>{label}</td>
-                        <td>{stats['hours']:.2f}h</td>
-                        <td>{stats['entries']}</td>
-                        <td>{issue_count}</td>
-                        <td>{percentage:.1f}%</td>
-                        <td>
-                            <div class="progress-bar">
-                                <div class="progress-fill" style="width: {percentage}%">
-                                    {percentage:.1f}%
-                                </div>
-                            </div>
-                        </td>
-                    </tr>
-"""
-
-        html += """
-                </tbody>
-            </table>
-        </div>
-
-        <div class="section">
-            <h2 class="section-title">Hours by Team</h2>
-            <table>
-                <thead>
-                    <tr>
-                        <th>Team</th>
-                        <th>Hours</th>
-                        <th>Entries</th>
-                        <th>Issues</th>
-                        <th>% of Total</th>
-                        <th>Distribution</th>
-                    </tr>
-                </thead>
-                <tbody>
-"""
-
-        for team, stats in teams_sorted:
-            percentage = (stats['hours'] / total_hours * 100) if total_hours > 0 else 0
-            issue_count = len(stats['issues'])
-            html += f"""
-                    <tr>
-                        <td>{team}</td>
-                        <td>{stats['hours']:.2f}h</td>
-                        <td>{stats['entries']}</td>
-                        <td>{issue_count}</td>
-                        <td>{percentage:.1f}%</td>
-                        <td>
-                            <div class="progress-bar">
-                                <div class="progress-fill" style="width: {percentage}%">
-                                    {percentage:.1f}%
-                                </div>
-                            </div>
-                        </td>
-                    </tr>
-"""
-
-        html += """
-                </tbody>
-            </table>
-        </div>
-
-        <div class="section">
+        <div class="section" id="all-entries">
             <h2 class="section-title">All Worklog Entries</h2>
             <table>
                 <thead>
