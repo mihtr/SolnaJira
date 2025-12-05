@@ -1,4 +1,4 @@
-"""
+﻿"""
 Extract worklogs from Jira ZYN project filtered by ERP Activity.
 Includes all issues linked to epics that match the filter.
 """
@@ -36,7 +36,7 @@ ERP_ACTIVITY_FILTER = os.getenv('ERP_ACTIVITY_FILTER', 'ProjectTask-000000071187
 LOG_LEVEL = int(os.getenv('LOG_LEVEL', '1'))  # 1 = standard, 2 = debug (shows [DEBUG] messages)
 
 class JiraWorklogExtractor:
-    def __init__(self, jira_url, api_token, project_key=None, erp_activity_filter=None, log_level=1, cache_dir='.cache', use_cache=True, cache_ttl=3600):
+    def __init__(self, jira_url, api_token, project_key=None, erp_activity_filter=None, log_level=1, cache_dir='.cache', use_cache=True, cache_ttl=3600, skip_validation=False):
         self.jira_url = jira_url.rstrip('/')
         self.api_token = api_token
         self.project_key = project_key or PROJECT_KEY
@@ -59,6 +59,10 @@ class JiraWorklogExtractor:
             if self.log_level >= 2:
                 print(f"[DEBUG] Cache enabled: {self.cache_dir.absolute()} (TTL: {cache_ttl}s)")
 
+        # Validate configuration if not skipped
+        if not skip_validation:
+            self.validate_configuration()
+
     def _create_session_with_retries(self):
         """Create HTTP session with automatic retry logic"""
         session = requests.Session()
@@ -78,6 +82,170 @@ class JiraWorklogExtractor:
         session.mount("https://", adapter)
 
         return session
+
+    def validate_configuration(self):
+        """
+        Validate Jira configuration settings.
+
+        Checks:
+        1. Jira URL is reachable
+        2. API token is valid (authentication works)
+        3. Project exists
+        4. Custom fields exist (customfield_10014, customfield_11440, customfield_10076)
+        5. ERP Activity filter field exists
+
+        Raises:
+            Exception: If any validation check fails with descriptive error message
+
+        Returns:
+            bool: True if all validations pass
+        """
+        print(f"\n{'='*70}")
+        print("VALIDATING CONFIGURATION")
+        print(f"{'='*70}")
+
+        # 1. Check if Jira URL is reachable
+        print("\n[1/5] Checking Jira URL accessibility...")
+        try:
+            response = self.session.get(self.jira_url, timeout=10)
+            if response.status_code >= 400:
+                raise Exception(f"Jira URL returned status code {response.status_code}")
+            print(f"  [OK] Jira URL is reachable: {self.jira_url}")
+        except requests.exceptions.RequestException as e:
+            raise Exception(f"Failed to reach Jira URL '{self.jira_url}': {e}")
+
+        # 2. Verify API token is valid
+        print("\n[2/5] Verifying API token authentication...")
+        try:
+            url = f"{self.jira_url}/rest/api/2/myself"
+            response = self.session.get(url, timeout=10)
+
+            if response.status_code == 401:
+                raise Exception("API token is invalid or expired. Please check your credentials.")
+            elif response.status_code == 403:
+                raise Exception("API token does not have sufficient permissions.")
+            elif response.status_code >= 400:
+                raise Exception(f"Authentication failed with status code {response.status_code}: {response.text[:200]}")
+
+            user_data = response.json()
+            user_name = user_data.get('displayName', 'Unknown')
+            user_email = user_data.get('emailAddress', 'Unknown')
+            print(f"  [OK] API token is valid")
+            print(f"    Authenticated as: {user_name} ({user_email})")
+        except requests.exceptions.RequestException as e:
+            raise Exception(f"Failed to verify API token: {e}")
+
+        # 3. Confirm the project exists
+        print(f"\n[3/5] Verifying project '{self.project_key}' exists...")
+        try:
+            url = f"{self.jira_url}/rest/api/2/project/{self.project_key}"
+            response = self.session.get(url, timeout=10)
+
+            if response.status_code == 404:
+                raise Exception(f"Project '{self.project_key}' does not exist or you don't have access to it.")
+            elif response.status_code >= 400:
+                raise Exception(f"Failed to retrieve project with status code {response.status_code}: {response.text[:200]}")
+
+            project_data = response.json()
+            project_name = project_data.get('name', 'Unknown')
+            print(f"  [OK] Project exists: {self.project_key} - {project_name}")
+        except requests.exceptions.RequestException as e:
+            raise Exception(f"Failed to verify project: {e}")
+
+        # 4. Test that custom fields exist
+        print("\n[4/5] Verifying custom fields exist...")
+        custom_fields = {
+            'customfield_10014': 'Epic Link',
+            'customfield_11440': 'Product Item',
+            'customfield_10076': 'Team Name'
+        }
+
+        try:
+            # Get a sample issue from the project to check custom fields
+            url = f"{self.jira_url}/rest/api/2/search"
+            params = {
+                "jql": f"project = {self.project_key}",
+                "maxResults": 1,
+                "fields": ",".join(custom_fields.keys())
+            }
+            response = self.session.get(url, params=params, timeout=10)
+
+            if response.status_code >= 400:
+                raise Exception(f"Failed to query issues with status code {response.status_code}: {response.text[:200]}")
+
+            data = response.json()
+
+            if data.get('total', 0) == 0:
+                print(f"  [!] Warning: No issues found in project '{self.project_key}' to validate custom fields")
+                print("    Custom fields will be validated when issues are processed")
+            else:
+                # Check if custom fields are present in the response
+                issue = data['issues'][0]
+                fields = issue.get('fields', {})
+
+                missing_fields = []
+                for field_id, field_name in custom_fields.items():
+                    if field_id in fields:
+                        print(f"  [OK] Custom field exists: {field_name} ({field_id})")
+                    else:
+                        missing_fields.append(f"{field_name} ({field_id})")
+
+                if missing_fields:
+                    print(f"  [!] Warning: The following custom fields were not found:")
+                    for field in missing_fields:
+                        print(f"    - {field}")
+                    print("    These fields may not be configured for this project or issue type")
+        except requests.exceptions.RequestException as e:
+            raise Exception(f"Failed to verify custom fields: {e}")
+
+        # 5. Validate the ERP Activity filter field exists
+        print("\n[5/5] Validating ERP Activity field...")
+        try:
+            # Try to query with the ERP Activity field to see if it exists
+            url = f"{self.jira_url}/rest/api/2/search"
+            jql = f'project = {self.project_key} AND "ERP Activity" IS NOT EMPTY'
+            params = {
+                "jql": jql,
+                "maxResults": 1
+            }
+            response = self.session.get(url, params=params, timeout=10)
+
+            if response.status_code >= 400:
+                error_message = response.text
+                if "does not exist" in error_message or "not exist" in error_message:
+                    raise Exception(f"ERP Activity field does not exist in project '{self.project_key}'")
+                else:
+                    raise Exception(f"Failed to validate ERP Activity field with status code {response.status_code}: {response.text[:200]}")
+
+            data = response.json()
+            issue_count = data.get('total', 0)
+            print(f"  [OK] ERP Activity field exists")
+            print(f"    Found {issue_count} issue(s) with ERP Activity field populated")
+
+            # Test the specific filter value
+            jql_with_filter = f'project = {self.project_key} AND "ERP Activity" ~ "{self.erp_activity_filter}"'
+            params['jql'] = jql_with_filter
+            response = self.session.get(url, params=params, timeout=10)
+
+            if response.status_code >= 400:
+                raise Exception(f"Failed to query with ERP Activity filter with status code {response.status_code}: {response.text[:200]}")
+
+            data = response.json()
+            filter_count = data.get('total', 0)
+
+            if filter_count == 0:
+                print(f"  [!] Warning: No issues found matching ERP Activity filter '{self.erp_activity_filter}'")
+                print("    Please verify the filter value is correct")
+            else:
+                print(f"    Found {filter_count} issue(s) matching filter '{self.erp_activity_filter}'")
+        except requests.exceptions.RequestException as e:
+            raise Exception(f"Failed to validate ERP Activity field: {e}")
+
+        print(f"\n{'='*70}")
+        print("CONFIGURATION VALIDATION COMPLETE")
+        print(f"{'='*70}\n")
+
+        return True
 
     def _get_cache_key(self, prefix, identifier):
         """Generate a cache key from prefix and identifier"""
@@ -1677,6 +1845,545 @@ class JiraWorklogExtractor:
                 }
             }
         });
+
+        // =============================================================================
+        // TABLE FILTERING AND SORTING FUNCTIONALITY
+        // =============================================================================
+
+        // Initialize filter state from localStorage
+        let filterState = {
+            globalSearch: '',
+            productItem: '',
+            component: '',
+            label: '',
+            team: '',
+            author: ''
+        };
+
+        // Load filter state on page load
+        function loadFilterState() {
+            const saved = localStorage.getItem('jiraWorklogFilters');
+            if (saved) {
+                try {
+                    filterState = JSON.parse(saved);
+                } catch (e) {
+                    console.error('Failed to parse saved filters:', e);
+                }
+            }
+        }
+
+        // Save filter state to localStorage
+        function saveFilterState() {
+            localStorage.setItem('jiraWorklogFilters', JSON.stringify(filterState));
+        }
+
+        // Clear all filters
+        function clearAllFilters() {
+            filterState = {
+                globalSearch: '',
+                productItem: '',
+                component: '',
+                label: '',
+                team: '',
+                author: ''
+            };
+            saveFilterState();
+
+            // Clear all filter inputs
+            document.querySelectorAll('.global-filter').forEach(input => input.value = '');
+            document.querySelectorAll('.column-filter').forEach(select => select.value = '');
+
+            // Reset all table rows
+            document.querySelectorAll('table tbody tr').forEach(row => {
+                row.style.display = '';
+            });
+
+            // Update visible counts
+            updateVisibleCounts();
+        }
+
+        // Apply all active filters to a table
+        function applyFilters(tableId) {
+            const table = document.getElementById(tableId);
+            if (!table) return;
+
+            const tbody = table.querySelector('tbody');
+            if (!tbody) return;
+
+            const rows = tbody.querySelectorAll('tr:not(.worklog-details-row)');
+            let visibleCount = 0;
+
+            rows.forEach(row => {
+                // Skip detail rows
+                if (row.querySelector('.worklog-details')) {
+                    return;
+                }
+
+                let visible = true;
+
+                // Apply global search filter
+                if (filterState.globalSearch) {
+                    const searchTerm = filterState.globalSearch.toLowerCase();
+                    const rowText = row.textContent.toLowerCase();
+                    if (!rowText.includes(searchTerm)) {
+                        visible = false;
+                    }
+                }
+
+                // Apply column-specific filters
+                const cells = row.querySelectorAll('td');
+
+                // Product Item filter (if column exists)
+                if (filterState.productItem && tableId === 'issueTable') {
+                    const productItemCell = cells[4]; // Column index for Product Item
+                    if (productItemCell && productItemCell.textContent.trim() !== filterState.productItem) {
+                        visible = false;
+                    }
+                }
+
+                // Component filter (if column exists)
+                if (filterState.component && tableId === 'issueTable') {
+                    const componentCell = cells[5]; // Column index for Component
+                    if (componentCell) {
+                        const components = componentCell.textContent.trim();
+                        if (!components.includes(filterState.component) && filterState.component !== '-') {
+                            visible = false;
+                        } else if (filterState.component === '-' && components !== '-') {
+                            visible = false;
+                        }
+                    }
+                }
+
+                // Label filter (if column exists)
+                if (filterState.label && tableId === 'issueTable') {
+                    const labelCell = cells[6]; // Column index for Label
+                    if (labelCell) {
+                        const labels = labelCell.textContent.trim();
+                        if (!labels.includes(filterState.label) && filterState.label !== '-') {
+                            visible = false;
+                        } else if (filterState.label === '-' && labels !== '-') {
+                            visible = false;
+                        }
+                    }
+                }
+
+                // Team filter (if column exists)
+                if (filterState.team && tableId === 'issueTable') {
+                    const teamCell = cells[7]; // Column index for Team
+                    if (teamCell && teamCell.textContent.trim() !== filterState.team) {
+                        visible = false;
+                    }
+                }
+
+                // Author filter (if column exists)
+                if (filterState.author && (tableId === 'authorTable' || tableId === 'allEntriesTable')) {
+                    let authorCell;
+                    if (tableId === 'authorTable') {
+                        authorCell = cells[0]; // First column in author table
+                    } else if (tableId === 'allEntriesTable') {
+                        authorCell = cells[4]; // Author column in all entries
+                    }
+                    if (authorCell && authorCell.textContent.trim() !== filterState.author) {
+                        visible = false;
+                    }
+                }
+
+                row.style.display = visible ? '' : 'none';
+                if (visible) visibleCount++;
+            });
+
+            return visibleCount;
+        }
+
+        // Update visible row counts
+        function updateVisibleCounts() {
+            const tables = ['issueTable', 'authorTable', 'allEntriesTable', 'productItemTable',
+                          'componentTable', 'labelTable', 'teamTable'];
+
+            tables.forEach(tableId => {
+                const count = applyFilters(tableId);
+                const countElement = document.getElementById(tableId + 'Count');
+                if (countElement) {
+                    countElement.textContent = count;
+                }
+            });
+        }
+
+        // Create filter controls for a table
+        function createFilterControls(tableId, columnFilters = []) {
+            const table = document.getElementById(tableId);
+            if (!table) return;
+
+            const section = table.closest('.section');
+            if (!section) return;
+
+            // Create filter container
+            const filterContainer = document.createElement('div');
+            filterContainer.className = 'filter-container';
+            filterContainer.style.cssText = `
+                background: #f8f9fa;
+                padding: 20px;
+                border-radius: 8px;
+                margin-bottom: 20px;
+                box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            `;
+
+            // Global search
+            const searchDiv = document.createElement('div');
+            searchDiv.style.marginBottom = '15px';
+            searchDiv.innerHTML = `
+                <label style="display: block; font-weight: 600; margin-bottom: 8px; color: #333;">
+                    🔍 Search:
+                </label>
+                <div style="display: flex; gap: 10px;">
+                    <input type="text"
+                           class="global-filter"
+                           data-table="${tableId}"
+                           placeholder="Filter all columns..."
+                           style="flex: 1; padding: 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px;">
+                    <button onclick="clearSearchFor('${tableId}')"
+                            style="padding: 10px 20px; background: #6c757d; color: white; border: none;
+                                   border-radius: 4px; cursor: pointer; font-size: 14px;">
+                        Clear
+                    </button>
+                </div>
+            `;
+            filterContainer.appendChild(searchDiv);
+
+            // Column-specific filters
+            if (columnFilters.length > 0) {
+                const columnFiltersDiv = document.createElement('div');
+                columnFiltersDiv.style.cssText = `
+                    display: grid;
+                    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+                    gap: 15px;
+                `;
+
+                columnFilters.forEach(filter => {
+                    const filterDiv = document.createElement('div');
+                    filterDiv.innerHTML = `
+                        <label style="display: block; font-weight: 600; margin-bottom: 8px; color: #333;">
+                            ${filter.icon} ${filter.label}:
+                        </label>
+                        <select class="column-filter"
+                                data-filter="${filter.key}"
+                                data-table="${tableId}"
+                                style="width: 100%; padding: 10px; border: 1px solid #ddd;
+                                       border-radius: 4px; font-size: 14px; background: white;">
+                            <option value="">All ${filter.label}</option>
+                            ${filter.options.map(opt =>
+                                `<option value="${opt}">${opt}</option>`
+                            ).join('')}
+                        </select>
+                    `;
+                    columnFiltersDiv.appendChild(filterDiv);
+                });
+
+                filterContainer.appendChild(columnFiltersDiv);
+            }
+
+            // Visible count display
+            const countDiv = document.createElement('div');
+            countDiv.style.cssText = 'margin-top: 15px; font-weight: 600; color: #667eea;';
+            countDiv.innerHTML = `
+                Showing <span id="${tableId}Count">0</span> rows
+            `;
+            filterContainer.appendChild(countDiv);
+
+            // Insert before table
+            table.parentNode.insertBefore(filterContainer, table);
+
+            // Restore saved filters
+            const globalInput = filterContainer.querySelector('.global-filter');
+            if (globalInput) {
+                globalInput.value = filterState.globalSearch;
+            }
+
+            filterContainer.querySelectorAll('.column-filter').forEach(select => {
+                const filterKey = select.dataset.filter;
+                if (filterState[filterKey]) {
+                    select.value = filterState[filterKey];
+                }
+            });
+        }
+
+        // Clear search for specific table
+        function clearSearchFor(tableId) {
+            const input = document.querySelector(`.global-filter[data-table="${tableId}"]`);
+            if (input) {
+                input.value = '';
+                filterState.globalSearch = '';
+                saveFilterState();
+                applyFilters(tableId);
+                updateVisibleCounts();
+            }
+        }
+
+        // Extract unique values from table column
+        function getUniqueColumnValues(tableId, columnIndex) {
+            const table = document.getElementById(tableId);
+            if (!table) return [];
+
+            const values = new Set();
+            const rows = table.querySelectorAll('tbody tr:not(.worklog-details-row)');
+
+            rows.forEach(row => {
+                if (row.querySelector('.worklog-details')) return;
+
+                const cells = row.querySelectorAll('td');
+                if (cells[columnIndex]) {
+                    const text = cells[columnIndex].textContent.trim();
+                    if (text) {
+                        // For multi-value cells (like components), split and add individually
+                        if (text.includes(',')) {
+                            text.split(',').forEach(val => {
+                                const trimmed = val.trim();
+                                if (trimmed) values.add(trimmed);
+                            });
+                        } else {
+                            values.add(text);
+                        }
+                    }
+                }
+            });
+
+            return Array.from(values).sort();
+        }
+
+        // =============================================================================
+        // TABLE SORTING FUNCTIONALITY
+        // =============================================================================
+
+        let sortState = {};
+
+        function makeSortable(tableId) {
+            const table = document.getElementById(tableId);
+            if (!table) return;
+
+            const headers = table.querySelectorAll('thead th');
+
+            headers.forEach((header, index) => {
+                // Skip action columns
+                if (header.textContent.includes('Actions') || header.textContent.includes('Distribution')) {
+                    return;
+                }
+
+                header.style.cursor = 'pointer';
+                header.style.userSelect = 'none';
+                header.style.position = 'relative';
+                header.style.paddingRight = '25px';
+
+                // Add sort indicator
+                const indicator = document.createElement('span');
+                indicator.className = 'sort-indicator';
+                indicator.style.cssText = `
+                    position: absolute;
+                    right: 8px;
+                    top: 50%;
+                    transform: translateY(-50%);
+                    opacity: 0.3;
+                `;
+                indicator.innerHTML = '▲▼';
+                header.appendChild(indicator);
+
+                header.addEventListener('click', (e) => {
+                    if (e.shiftKey) {
+                        // Multi-column sort (future enhancement)
+                        sortTable(tableId, index, true);
+                    } else {
+                        sortTable(tableId, index, false);
+                    }
+                });
+            });
+        }
+
+        function sortTable(tableId, columnIndex, multiSort = false) {
+            const table = document.getElementById(tableId);
+            if (!table) return;
+
+            const tbody = table.querySelector('tbody');
+            const rows = Array.from(tbody.querySelectorAll('tr:not(.worklog-details-row)'));
+
+            // Filter out detail rows
+            const dataRows = rows.filter(row => !row.querySelector('.worklog-details'));
+
+            // Determine sort direction
+            const currentSort = sortState[tableId] || {};
+            const currentDirection = currentSort.column === columnIndex ? currentSort.direction : null;
+            const newDirection = currentDirection === 'asc' ? 'desc' : 'asc';
+
+            // Update sort state
+            sortState[tableId] = { column: columnIndex, direction: newDirection };
+
+            // Update sort indicators
+            table.querySelectorAll('thead th .sort-indicator').forEach((indicator, idx) => {
+                if (idx === columnIndex) {
+                    indicator.style.opacity = '1';
+                    indicator.innerHTML = newDirection === 'asc' ? '▲' : '▼';
+                } else {
+                    indicator.style.opacity = '0.3';
+                    indicator.innerHTML = '▲▼';
+                }
+            });
+
+            // Sort rows
+            dataRows.sort((a, b) => {
+                const cellA = a.querySelectorAll('td')[columnIndex];
+                const cellB = b.querySelectorAll('td')[columnIndex];
+
+                if (!cellA || !cellB) return 0;
+
+                let valueA = cellA.textContent.trim();
+                let valueB = cellB.textContent.trim();
+
+                // Try to parse as number
+                const numA = parseFloat(valueA.replace(/[^0-9.-]/g, ''));
+                const numB = parseFloat(valueB.replace(/[^0-9.-]/g, ''));
+
+                if (!isNaN(numA) && !isNaN(numB)) {
+                    return newDirection === 'asc' ? numA - numB : numB - numA;
+                }
+
+                // String comparison
+                return newDirection === 'asc'
+                    ? valueA.localeCompare(valueB)
+                    : valueB.localeCompare(valueA);
+            });
+
+            // Re-append sorted rows
+            dataRows.forEach(row => {
+                tbody.appendChild(row);
+                // If there's a detail row, append it after
+                const detailRow = row.nextElementSibling;
+                if (detailRow && detailRow.querySelector('.worklog-details')) {
+                    tbody.appendChild(detailRow);
+                }
+            });
+        }
+
+        // =============================================================================
+        // INITIALIZATION
+        // =============================================================================
+
+        document.addEventListener('DOMContentLoaded', function() {
+            // Load saved filter state
+            loadFilterState();
+
+            // Create tables with IDs for easier targeting
+            const issueTable = document.querySelector('#issue table');
+            if (issueTable) issueTable.id = 'issueTable';
+
+            const authorTable = document.querySelector('#author table');
+            if (authorTable) authorTable.id = 'authorTable';
+
+            const allEntriesTable = document.querySelector('#all-entries table');
+            if (allEntriesTable) allEntriesTable.id = 'allEntriesTable';
+
+            const productItemTable = document.querySelector('#product-item table');
+            if (productItemTable) productItemTable.id = 'productItemTable';
+
+            const componentTable = document.querySelector('#component table');
+            if (componentTable) componentTable.id = 'componentTable';
+
+            const labelTable = document.querySelector('#label table');
+            if (labelTable) labelTable.id = 'labelTable';
+
+            const teamTable = document.querySelector('#team table');
+            if (teamTable) teamTable.id = 'teamTable';
+
+            // Setup filters for Issue table
+            if (issueTable) {
+                const productItems = getUniqueColumnValues('issueTable', 4);
+                const components = getUniqueColumnValues('issueTable', 5);
+                const labels = getUniqueColumnValues('issueTable', 6);
+                const teams = getUniqueColumnValues('issueTable', 7);
+
+                createFilterControls('issueTable', [
+                    { key: 'productItem', label: 'Product Item', icon: '📦', options: productItems },
+                    { key: 'component', label: 'Component', icon: '🧩', options: components },
+                    { key: 'label', label: 'Label', icon: '🏷️', options: labels },
+                    { key: 'team', label: 'Team', icon: '👥', options: teams }
+                ]);
+                makeSortable('issueTable');
+            }
+
+            // Setup filters for Author table
+            if (authorTable) {
+                const authors = getUniqueColumnValues('authorTable', 0);
+                createFilterControls('authorTable', [
+                    { key: 'author', label: 'Author', icon: '✍️', options: authors }
+                ]);
+                makeSortable('authorTable');
+            }
+
+            // Setup filters for All Entries table
+            if (allEntriesTable) {
+                createFilterControls('allEntriesTable', []);
+                makeSortable('allEntriesTable');
+            }
+
+            // Setup filters for aggregate tables
+            if (productItemTable) {
+                createFilterControls('productItemTable', []);
+                makeSortable('productItemTable');
+            }
+
+            if (componentTable) {
+                createFilterControls('componentTable', []);
+                makeSortable('componentTable');
+            }
+
+            if (labelTable) {
+                createFilterControls('labelTable', []);
+                makeSortable('labelTable');
+            }
+
+            if (teamTable) {
+                createFilterControls('teamTable', []);
+                makeSortable('teamTable');
+            }
+
+            // Attach event listeners to all filter inputs
+            document.querySelectorAll('.global-filter').forEach(input => {
+                input.addEventListener('input', function() {
+                    filterState.globalSearch = this.value;
+                    saveFilterState();
+
+                    const tableId = this.dataset.table;
+                    applyFilters(tableId);
+                    updateVisibleCounts();
+                });
+            });
+
+            document.querySelectorAll('.column-filter').forEach(select => {
+                select.addEventListener('change', function() {
+                    const filterKey = this.dataset.filter;
+                    filterState[filterKey] = this.value;
+                    saveFilterState();
+
+                    const tableId = this.dataset.table;
+                    applyFilters(tableId);
+                    updateVisibleCounts();
+                });
+            });
+
+            // Add "Clear All Filters" button to navigation
+            const navMenu = document.querySelector('.nav-menu');
+            if (navMenu) {
+                const clearButton = document.createElement('a');
+                clearButton.href = '#';
+                clearButton.innerHTML = '🗑️ Clear All Filters';
+                clearButton.style.background = 'rgba(239, 68, 68, 0.8)';
+                clearButton.addEventListener('click', function(e) {
+                    e.preventDefault();
+                    clearAllFilters();
+                });
+                navMenu.appendChild(clearButton);
+            }
+
+            // Apply initial filters (restore from localStorage)
+            updateVisibleCounts();
+        });
     </script>
 </body>
 </html>
@@ -1753,6 +2460,10 @@ Examples:
                         default=3600,
                         help='Cache time-to-live in seconds (default: 3600 = 1 hour)')
 
+    parser.add_argument('--skip-validation',
+                        action='store_true',
+                        help='Skip configuration validation on startup')
+
     return parser.parse_args()
 
 
@@ -1786,7 +2497,8 @@ def main():
         erp_activity_filter=args.erp_activity,
         log_level=args.log_level,
         use_cache=not args.no_cache,
-        cache_ttl=args.cache_ttl
+        cache_ttl=args.cache_ttl,
+        skip_validation=args.skip_validation
     )
 
     # Collect all related issues
