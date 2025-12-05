@@ -1,5 +1,7 @@
 # CLAUDE.md
 
+**Version: 1.0.0**
+
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## Purpose
@@ -39,7 +41,7 @@ The `config.json` file exists as a template but is not currently used by the scr
 
 ## Architecture
 
-### Three-Stage Collection Process
+### Five-Stage Collection Process
 
 The `JiraWorklogExtractor` class implements a comprehensive issue collection strategy:
 
@@ -49,7 +51,9 @@ The `JiraWorklogExtractor` class implements a comprehensive issue collection str
 
 3. **Linked Issues** (`get_linked_issues`): For all collected issues, follows issue links (blocks, relates to, etc.) to capture the full scope of related work
 
-This ensures comprehensive worklog extraction across the entire project scope, not just direct matches.
+4. **Sub-tasks** (`get_subtasks`): For all collected issues, retrieves any sub-tasks to ensure complete coverage of work items
+
+This ensures comprehensive worklog extraction across the entire project scope, including all related work and sub-tasks.
 
 ### API Integration
 
@@ -93,4 +97,4 @@ The script searches using JQL: `project = {PROJECT_KEY} AND "ERP Activity" ~ "{E
 - **Issue metadata**: Automatically fetches issue type and epic link for each worklog
 - **Robust comment parsing**: Handles both plain text and Atlassian Document Format comments
 - **Interactive HTML reports**: Click "View Details" on any author to see their individual worklog entries
-- **Three-stage collection**: Ensures comprehensive coverage by expanding epics and following links
+- **Five-stage collection**: Ensures comprehensive coverage by expanding epics, following links, and including sub-tasks

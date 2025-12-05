@@ -11,10 +11,13 @@ from collections import defaultdict
 import csv
 from pathlib import Path
 
+# Version
+VERSION = "1.0.0"
+
 # Configuration
 JIRA_URL = "https://your-jira-instance.atlassian.net"  # Update this
 JIRA_EMAIL = "your-email@example.com"  # Update this
-JIRA_API_TOKEN = "your-api-token"  # Update this
+JIRA_API_TOKEN = "your-api-token-here"  # Update this - Get from https://id.atlassian.com/manage-profile/security/api-tokens
 PROJECT_KEY = "ZYN"
 ERP_ACTIVITY_FILTER = "ProjectTask-00000007118797"
 LOG_LEVEL = 1  # 1 = standard, 2 = debug (shows [DEBUG] messages)
@@ -148,12 +151,33 @@ class JiraWorklogExtractor:
         jql = f'project = {PROJECT_KEY} AND "ERP Activity" ~ "{ERP_ACTIVITY_FILTER}"'
         return self.search_issues(jql)
 
+    def get_subtasks(self, issue_key):
+        """Get all subtasks for an issue"""
+        url = f"{self.jira_url}/rest/api/2/issue/{issue_key}"
+        params = {"fields": "subtasks"}
+
+        if LOG_LEVEL >= 2:
+            print(f"\n[DEBUG] Getting subtasks for {issue_key}")
+
+        response = requests.get(url, headers=self.headers, params=params)
+        response.raise_for_status()
+        data = response.json()
+
+        subtasks = data.get('fields', {}).get('subtasks', [])
+        subtask_keys = [subtask['key'] for subtask in subtasks]
+
+        if subtask_keys and LOG_LEVEL >= 2:
+            print(f"[DEBUG] Found {len(subtask_keys)} subtask(s): {', '.join(subtask_keys)}")
+
+        return subtask_keys
+
     def collect_all_related_issues(self):
         """
         Collect all issues related to the ERP Activity:
         1. Direct matches
         2. Issues linked to epics
         3. Issues linked to any matched issue
+        4. Sub-tasks of all collected issues
         """
         print(f"\n{'='*70}")
         print(f"STARTING ISSUE COLLECTION")
@@ -210,15 +234,30 @@ class JiraWorklogExtractor:
                         linked_count += 1
 
         print(f"\n[STEP 4 COMPLETE] Added {linked_count} new linked issues")
+
+        # Step 4: Get all subtasks
+        print(f"\n[STEP 5] Finding subtasks (checking {len(all_issue_keys)} issues)...")
+        initial_keys_for_subtasks = list(all_issue_keys)
+        subtask_count = 0
+        for i, issue_key in enumerate(initial_keys_for_subtasks, 1):
+            if i % 20 == 0:
+                print(f"  Progress: {i}/{len(initial_keys_for_subtasks)} issues checked, {subtask_count} subtasks found")
+            subtasks = self.get_subtasks(issue_key)
+            for subtask_key in subtasks:
+                if subtask_key not in all_issue_keys:
+                    all_issue_keys.add(subtask_key)
+                    subtask_count += 1
+
+        print(f"\n[STEP 5 COMPLETE] Added {subtask_count} new subtasks")
         print(f"\n{'='*70}")
         print(f"ISSUE COLLECTION COMPLETE: {len(all_issue_keys)} total issues")
         print(f"{'='*70}\n")
         return sorted(all_issue_keys)
 
     def get_issue_metadata(self, issue_key):
-        """Get issue type and epic link for an issue"""
+        """Get issue type, epic link, and summary for an issue"""
         url = f"{self.jira_url}/rest/api/2/issue/{issue_key}"
-        params = {"fields": "issuetype,customfield_10014"}  # customfield_10014 is typically Epic Link
+        params = {"fields": "issuetype,customfield_10014,summary"}  # customfield_10014 is typically Epic Link
 
         response = requests.get(url, headers=self.headers, params=params)
         response.raise_for_status()
@@ -226,7 +265,8 @@ class JiraWorklogExtractor:
 
         return {
             'issue_type': data.get('fields', {}).get('issuetype', {}).get('name', 'Unknown'),
-            'epic_link': data.get('fields', {}).get('customfield_10014', '')
+            'epic_link': data.get('fields', {}).get('customfield_10014', ''),
+            'summary': data.get('fields', {}).get('summary', '')
         }
 
     def extract_worklogs(self, issue_keys):
@@ -275,6 +315,7 @@ class JiraWorklogExtractor:
                         'issue_key': issue_key,
                         'issue_type': metadata['issue_type'],
                         'epic_link': metadata['epic_link'],
+                        'summary': metadata['summary'],
                         'worklog_id': worklog['id'],
                         'author': worklog['author'].get('displayName', 'Unknown'),
                         'author_email': worklog['author'].get('emailAddress', ''),
@@ -296,7 +337,7 @@ class JiraWorklogExtractor:
             return
 
         with open(filename, 'w', newline='', encoding='utf-8') as csvfile:
-            fieldnames = ['issue_key', 'issue_type', 'epic_link', 'author', 'author_email', 'time_spent',
+            fieldnames = ['issue_key', 'summary', 'issue_type', 'epic_link', 'author', 'author_email', 'time_spent',
                          'time_spent_hours', 'started', 'comment']
             writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
 
@@ -304,6 +345,7 @@ class JiraWorklogExtractor:
             for worklog in worklogs:
                 writer.writerow({
                     'issue_key': worklog['issue_key'],
+                    'summary': worklog['summary'],
                     'issue_type': worklog['issue_type'],
                     'epic_link': worklog['epic_link'],
                     'author': worklog['author'],
@@ -352,7 +394,7 @@ class JiraWorklogExtractor:
 
         # Calculate summary statistics
         by_author = defaultdict(lambda: {'hours': 0, 'entries': 0, 'worklogs': []})
-        by_issue = defaultdict(lambda: {'hours': 0, 'entries': 0, 'authors': set()})
+        by_issue = defaultdict(lambda: {'hours': 0, 'entries': 0, 'authors': set(), 'issue_type': '', 'epic_link': '', 'summary': ''})
         total_seconds = 0
 
         for worklog in worklogs:
@@ -367,6 +409,9 @@ class JiraWorklogExtractor:
             by_issue[issue_key]['hours'] += seconds / 3600
             by_issue[issue_key]['entries'] += 1
             by_issue[issue_key]['authors'].add(author)
+            by_issue[issue_key]['issue_type'] = worklog['issue_type']
+            by_issue[issue_key]['epic_link'] = worklog['epic_link']
+            by_issue[issue_key]['summary'] = worklog['summary']
 
             total_seconds += seconds
 
@@ -615,6 +660,7 @@ class JiraWorklogExtractor:
         <div class="header">
             <h1>Jira Worklog Report</h1>
             <div class="subtitle">Project: {PROJECT_KEY}</div>
+            <div class="subtitle">Version: {VERSION}</div>
             <div class="subtitle">Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</div>
         </div>
 
@@ -710,6 +756,9 @@ class JiraWorklogExtractor:
                 <thead>
                     <tr>
                         <th>Issue Key</th>
+                        <th>Summary</th>
+                        <th>Type</th>
+                        <th>Epic Link</th>
                         <th>Hours</th>
                         <th>Entries</th>
                         <th>Contributors</th>
@@ -723,9 +772,14 @@ class JiraWorklogExtractor:
         for issue_key, stats in issues_sorted:
             percentage = (stats['hours'] / total_hours * 100) if total_hours > 0 else 0
             contributors = ', '.join(sorted(stats['authors']))
+            epic_link = stats['epic_link'] if stats['epic_link'] else '-'
+            summary = stats['summary'] if stats['summary'] else '-'
             html += f"""
                     <tr>
                         <td><strong>{issue_key}</strong></td>
+                        <td>{summary}</td>
+                        <td>{stats['issue_type']}</td>
+                        <td>{epic_link}</td>
                         <td>{stats['hours']:.2f}h</td>
                         <td>{stats['entries']}</td>
                         <td>{contributors}</td>
@@ -751,6 +805,7 @@ class JiraWorklogExtractor:
                 <thead>
                     <tr>
                         <th>Issue</th>
+                        <th>Summary</th>
                         <th>Type</th>
                         <th>Epic Link</th>
                         <th>Author</th>
@@ -766,9 +821,12 @@ class JiraWorklogExtractor:
             comment = worklog['comment'][:100] + '...' if len(worklog['comment']) > 100 else worklog['comment']
             comment = comment if comment else 'No comment'
             epic_link = worklog['epic_link'] if worklog['epic_link'] else '-'
+            summary = worklog['summary'][:50] + '...' if len(worklog['summary']) > 50 else worklog['summary']
+            summary = summary if summary else '-'
             html += f"""
                     <tr>
                         <td><strong>{worklog['issue_key']}</strong></td>
+                        <td>{summary}</td>
                         <td>{worklog['issue_type']}</td>
                         <td>{epic_link}</td>
                         <td>{worklog['author']}</td>

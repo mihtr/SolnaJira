@@ -1,5 +1,7 @@
 # Jira Worklog Extractor for ZYN Project
 
+**Version: 1.0.0**
+
 This tool extracts worklogs from Jira for the ZYN project, filtered by ERP Activity. It includes all issues linked to epics that match the filter criteria.
 
 ## Features
