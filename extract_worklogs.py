@@ -821,14 +821,19 @@ def main():
     # Generate summary
     extractor.generate_summary(worklogs)
 
+    # Create output directory if it doesn't exist
+    from pathlib import Path
+    output_dir = Path('output')
+    output_dir.mkdir(exist_ok=True)
+
     # Export to CSV
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    csv_filename = f'zyn_worklogs_{timestamp}.csv'
-    extractor.export_to_csv(worklogs, csv_filename)
+    csv_filename = output_dir / f'zyn_worklogs_{timestamp}.csv'
+    extractor.export_to_csv(worklogs, str(csv_filename))
 
     # Export to HTML
-    html_filename = f'zyn_worklogs_{timestamp}.html'
-    extractor.export_to_html(worklogs, html_filename)
+    html_filename = output_dir / f'zyn_worklogs_{timestamp}.html'
+    extractor.export_to_html(worklogs, str(html_filename))
 
     print(f"\nDone! Results exported:")
     print(f"  - CSV: {csv_filename}")
