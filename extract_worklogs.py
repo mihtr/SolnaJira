@@ -585,6 +585,10 @@ class JiraWorklogExtractor:
             by_issue[issue_key]['issue_type'] = worklog['issue_type']
             by_issue[issue_key]['epic_link'] = worklog['epic_link']
             by_issue[issue_key]['summary'] = worklog['summary']
+            by_issue[issue_key]['components'] = worklog.get('components', [])
+            by_issue[issue_key]['labels'] = worklog.get('labels', [])
+            by_issue[issue_key]['product_item'] = worklog.get('product_item', 'None')
+            by_issue[issue_key]['team'] = worklog.get('team', 'None')
 
             # Extract year and month from worklog started date
             if worklog['started']:
@@ -1343,6 +1347,10 @@ class JiraWorklogExtractor:
                         <th>Summary</th>
                         <th>Type</th>
                         <th>Epic Link</th>
+                        <th>Product Item</th>
+                        <th>Component</th>
+                        <th>Label</th>
+                        <th>Team</th>
                         <th>Hours</th>
                         <th>Entries</th>
                         <th>Contributors</th>
@@ -1358,6 +1366,13 @@ class JiraWorklogExtractor:
             contributors = ', '.join(sorted(stats['authors']))
             epic_link = stats['epic_link'] if stats['epic_link'] else '-'
             summary = stats['summary'] if stats['summary'] else '-'
+
+            # Format the 4 new fields
+            components = ', '.join(stats.get('components', [])) if stats.get('components') else '-'
+            labels = ', '.join(stats.get('labels', [])) if stats.get('labels') else '-'
+            product_item = stats.get('product_item', 'None')
+            team = stats.get('team', 'None')
+
             issue_link = make_issue_link(issue_key)
             html += f"""
                     <tr>
@@ -1365,6 +1380,10 @@ class JiraWorklogExtractor:
                         <td>{summary}</td>
                         <td>{stats['issue_type']}</td>
                         <td>{epic_link}</td>
+                        <td>{product_item}</td>
+                        <td>{components}</td>
+                        <td>{labels}</td>
+                        <td>{team}</td>
                         <td>{stats['hours']:.2f}h</td>
                         <td>{stats['entries']}</td>
                         <td>{contributors}</td>
