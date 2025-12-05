@@ -6,7 +6,13 @@
       "Bash(git init:*)",
       "mcp__mcp-github-server__get_me",
       "mcp__mcp-github-server__create_repository",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(git commit -m \"$(cat <<''EOF''\nInitial commit: Jira worklog extraction tool\n\n- Extract worklogs from Jira using custom field search\n- Three-stage collection: direct matches, epic expansion, linked issues\n- Bearer token authentication\n- Export to CSV and interactive HTML reports\n- Comprehensive debug logging\n- User prompts for custom field and value\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nEOF\n)\")",
+      "Bash(git branch:*)",
+      "Bash(git remote add:*)",
+      "Bash(git push:*)",
+      "Bash(git commit --amend -m \"$(cat <<''EOF''\nInitial commit: Jira worklog extraction tool\n\n- Extract worklogs from Jira using custom field search\n- Three-stage collection: direct matches, epic expansion, linked issues\n- Bearer token authentication\n- Export to CSV and interactive HTML reports\n- Comprehensive debug logging\n- User prompts for custom field and value\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nEOF\n)\")",
+      "Bash(ls:*)"
     ],
     "deny": [],
     "ask": []

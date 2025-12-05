@@ -16,7 +16,8 @@ JIRA_URL = "https://your-jira-instance.atlassian.net"  # Update this
 JIRA_EMAIL = "your-email@example.com"  # Update this
 JIRA_API_TOKEN = "your-api-token"  # Update this
 PROJECT_KEY = "ZYN"
-CUSTOM_FIELD_ERP_ACTIVITY = "customfield_XXXXX"  # Update with actual custom field ID
+ERP_ACTIVITY_FILTER = "ProjectTask-00000007118797"
+LOG_LEVEL = 1  # 1 = standard, 2 = debug (shows [DEBUG] messages)
 
 class JiraWorklogExtractor:
     def __init__(self, jira_url, api_token):
@@ -44,23 +45,31 @@ class JiraWorklogExtractor:
                 "fields": ",".join(fields)
             }
 
-            print(f"\n[DEBUG] API Call: GET {url}")
-            print(f"[DEBUG] JQL: {jql}")
-            print(f"[DEBUG] Parameters: {params}")
-            print(f"[DEBUG] Headers: {self.headers}")
+            if LOG_LEVEL >= 2:
+                print(f"\n[DEBUG] API Call: GET {url}")
+                print(f"[DEBUG] JQL: {jql}")
+                print(f"[DEBUG] Parameters: {params}")
+                print(f"[DEBUG] Headers: {self.headers}")
 
             response = requests.get(url, headers=self.headers, params=params)
-            print(f"[DEBUG] Response Status: {response.status_code}")
+
+            if LOG_LEVEL >= 2:
+                print(f"[DEBUG] Response Status: {response.status_code}")
 
             if response.status_code != 200:
-                print(f"[DEBUG] Response Body: {response.text[:500]}")
+                if LOG_LEVEL >= 2:
+                    print(f"[DEBUG] Response Body: {response.text[:500]}")
 
             response.raise_for_status()
             data = response.json()
 
             batch_size = len(data['issues'])
             all_issues.extend(data['issues'])
-            print(f"[DEBUG] Retrieved {batch_size} issues (total so far: {len(all_issues)}/{data['total']})")
+
+            if LOG_LEVEL >= 2:
+                print(f"[DEBUG] Retrieved {batch_size} issues (total so far: {len(all_issues)}/{data['total']})")
+            else:
+                print(f"  Fetching issues: {len(all_issues)}/{data['total']}")
 
             if start_at + max_results >= data['total']:
                 break
@@ -79,14 +88,18 @@ class JiraWorklogExtractor:
         url = f"{self.jira_url}/rest/api/2/issue/{issue_key}"
         params = {"fields": "issuelinks"}
 
-        print(f"\n[DEBUG] Getting linked issues for {issue_key}")
-        print(f"[DEBUG] API Call: GET {url}")
+        if LOG_LEVEL >= 2:
+            print(f"\n[DEBUG] Getting linked issues for {issue_key}")
+            print(f"[DEBUG] API Call: GET {url}")
 
         response = requests.get(url, headers=self.headers, params=params)
-        print(f"[DEBUG] Response Status: {response.status_code}")
+
+        if LOG_LEVEL >= 2:
+            print(f"[DEBUG] Response Status: {response.status_code}")
 
         if response.status_code != 200:
-            print(f"[DEBUG] Response Body: {response.text[:500]}")
+            if LOG_LEVEL >= 2:
+                print(f"[DEBUG] Response Body: {response.text[:500]}")
 
         response.raise_for_status()
         data = response.json()
@@ -100,7 +113,7 @@ class JiraWorklogExtractor:
             if 'inwardIssue' in link:
                 linked_issues.append(link['inwardIssue']['key'])
 
-        if linked_issues:
+        if linked_issues and LOG_LEVEL >= 2:
             print(f"[DEBUG] Found {len(linked_issues)} linked issues: {', '.join(linked_issues)}")
 
         return linked_issues
@@ -109,31 +122,35 @@ class JiraWorklogExtractor:
         """Get all worklogs for an issue"""
         url = f"{self.jira_url}/rest/api/2/issue/{issue_key}/worklog"
 
-        print(f"[DEBUG] Getting worklogs for {issue_key}")
+        if LOG_LEVEL >= 2:
+            print(f"[DEBUG] Getting worklogs for {issue_key}")
 
         response = requests.get(url, headers=self.headers)
-        print(f"[DEBUG] Response Status: {response.status_code}")
+
+        if LOG_LEVEL >= 2:
+            print(f"[DEBUG] Response Status: {response.status_code}")
 
         if response.status_code != 200:
-            print(f"[DEBUG] Response Body: {response.text[:500]}")
+            if LOG_LEVEL >= 2:
+                print(f"[DEBUG] Response Body: {response.text[:500]}")
 
         response.raise_for_status()
         data = response.json()
 
         worklogs = data.get('worklogs', [])
-        if worklogs:
+        if worklogs and LOG_LEVEL >= 2:
             print(f"[DEBUG] Found {len(worklogs)} worklog(s) for {issue_key}")
 
         return worklogs
 
-    def find_issues_by_custom_field(self, custom_field, value):
-        """Find all issues with specific custom field value"""
-        jql = f'project = {PROJECT_KEY} AND "{custom_field}" ~ "{value}"'
+    def find_issues_by_erp_activity(self):
+        """Find all issues with ERP Activity filter"""
+        jql = f'project = {PROJECT_KEY} AND "ERP Activity" ~ "{ERP_ACTIVITY_FILTER}"'
         return self.search_issues(jql)
 
-    def collect_all_related_issues(self, custom_field, value):
+    def collect_all_related_issues(self):
         """
-        Collect all issues related to the custom field:
+        Collect all issues related to the ERP Activity:
         1. Direct matches
         2. Issues linked to epics
         3. Issues linked to any matched issue
@@ -141,10 +158,10 @@ class JiraWorklogExtractor:
         print(f"\n{'='*70}")
         print(f"STARTING ISSUE COLLECTION")
         print(f"{'='*70}")
-        print(f"Searching for issues with {custom_field} = {value}...")
+        print(f'Searching for issues with "ERP Activity" ~ "{ERP_ACTIVITY_FILTER}"...')
 
-        # Step 1: Find all issues matching the custom field
-        direct_issues = self.find_issues_by_custom_field(custom_field, value)
+        # Step 1: Find all issues matching the ERP Activity
+        direct_issues = self.find_issues_by_erp_activity()
         print(f"\n[STEP 1 COMPLETE] Found {len(direct_issues)} direct matches")
 
         all_issue_keys = set()
@@ -198,9 +215,24 @@ class JiraWorklogExtractor:
         print(f"{'='*70}\n")
         return sorted(all_issue_keys)
 
+    def get_issue_metadata(self, issue_key):
+        """Get issue type and epic link for an issue"""
+        url = f"{self.jira_url}/rest/api/2/issue/{issue_key}"
+        params = {"fields": "issuetype,customfield_10014"}  # customfield_10014 is typically Epic Link
+
+        response = requests.get(url, headers=self.headers, params=params)
+        response.raise_for_status()
+        data = response.json()
+
+        return {
+            'issue_type': data.get('fields', {}).get('issuetype', {}).get('name', 'Unknown'),
+            'epic_link': data.get('fields', {}).get('customfield_10014', '')
+        }
+
     def extract_worklogs(self, issue_keys):
         """Extract worklogs from all issues"""
         all_worklogs = []
+        issue_metadata_cache = {}
 
         print(f"\nExtracting worklogs from {len(issue_keys)} issues...")
         for i, issue_key in enumerate(issue_keys, 1):
@@ -208,19 +240,48 @@ class JiraWorklogExtractor:
                 print(f"  Progress: {i}/{len(issue_keys)} issues processed")
 
             try:
+                # Get issue metadata
+                if issue_key not in issue_metadata_cache:
+                    issue_metadata_cache[issue_key] = self.get_issue_metadata(issue_key)
+
+                metadata = issue_metadata_cache[issue_key]
+
                 worklogs = self.get_worklogs(issue_key)
-                if worklogs:
+                if worklogs and LOG_LEVEL >= 1:
                     print(f"    {issue_key}: Found {len(worklogs)} worklog(s)")
                 for worklog in worklogs:
+                    # Handle comment field - can be string, dict, or None
+                    comment = ''
+                    if worklog.get('comment'):
+                        comment_field = worklog['comment']
+                        if isinstance(comment_field, str):
+                            comment = comment_field
+                        elif isinstance(comment_field, dict):
+                            # Jira Atlassian Document Format
+                            try:
+                                content = comment_field.get('content', [])
+                                if content and len(content) > 0:
+                                    first_block = content[0]
+                                    if isinstance(first_block, dict):
+                                        block_content = first_block.get('content', [])
+                                        if block_content and len(block_content) > 0:
+                                            text_node = block_content[0]
+                                            if isinstance(text_node, dict):
+                                                comment = text_node.get('text', '')
+                            except (KeyError, IndexError, AttributeError):
+                                comment = str(comment_field)
+
                     all_worklogs.append({
                         'issue_key': issue_key,
+                        'issue_type': metadata['issue_type'],
+                        'epic_link': metadata['epic_link'],
                         'worklog_id': worklog['id'],
                         'author': worklog['author'].get('displayName', 'Unknown'),
                         'author_email': worklog['author'].get('emailAddress', ''),
                         'time_spent': worklog.get('timeSpent', ''),
                         'time_spent_seconds': worklog.get('timeSpentSeconds', 0),
                         'started': worklog.get('started', ''),
-                        'comment': worklog.get('comment', {}).get('content', [{}])[0].get('content', [{}])[0].get('text', '') if worklog.get('comment') else ''
+                        'comment': comment
                     })
             except Exception as e:
                 print(f"  Error extracting worklogs from {issue_key}: {e}")
@@ -235,7 +296,7 @@ class JiraWorklogExtractor:
             return
 
         with open(filename, 'w', newline='', encoding='utf-8') as csvfile:
-            fieldnames = ['issue_key', 'author', 'author_email', 'time_spent',
+            fieldnames = ['issue_key', 'issue_type', 'epic_link', 'author', 'author_email', 'time_spent',
                          'time_spent_hours', 'started', 'comment']
             writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
 
@@ -243,6 +304,8 @@ class JiraWorklogExtractor:
             for worklog in worklogs:
                 writer.writerow({
                     'issue_key': worklog['issue_key'],
+                    'issue_type': worklog['issue_type'],
+                    'epic_link': worklog['epic_link'],
                     'author': worklog['author'],
                     'author_email': worklog['author_email'],
                     'time_spent': worklog['time_spent'],
@@ -618,12 +681,13 @@ class JiraWorklogExtractor:
 
             for worklog in sorted(stats['worklogs'], key=lambda x: x['started'], reverse=True):
                 comment = worklog['comment'] if worklog['comment'] else 'No comment'
+                epic_display = f" • Epic: {worklog['epic_link']}" if worklog['epic_link'] else ''
                 html += f"""
                                 <div class="worklog-entry">
                                     <div class="worklog-meta">
-                                        <strong>{worklog['issue_key']}</strong> •
+                                        <strong>{worklog['issue_key']}</strong> ({worklog['issue_type']}) •
                                         {worklog['time_spent']} •
-                                        {worklog['started'][:10]}
+                                        {worklog['started'][:10]}{epic_display}
                                     </div>
                                     <div class="worklog-comment">{comment}</div>
                                 </div>
@@ -687,6 +751,8 @@ class JiraWorklogExtractor:
                 <thead>
                     <tr>
                         <th>Issue</th>
+                        <th>Type</th>
+                        <th>Epic Link</th>
                         <th>Author</th>
                         <th>Date</th>
                         <th>Time Spent</th>
@@ -699,9 +765,12 @@ class JiraWorklogExtractor:
         for worklog in sorted(worklogs, key=lambda x: x['started'], reverse=True):
             comment = worklog['comment'][:100] + '...' if len(worklog['comment']) > 100 else worklog['comment']
             comment = comment if comment else 'No comment'
+            epic_link = worklog['epic_link'] if worklog['epic_link'] else '-'
             html += f"""
                     <tr>
                         <td><strong>{worklog['issue_key']}</strong></td>
+                        <td>{worklog['issue_type']}</td>
+                        <td>{epic_link}</td>
                         <td>{worklog['author']}</td>
                         <td>{worklog['started'][:10]}</td>
                         <td>{worklog['time_spent']}</td>
@@ -739,12 +808,8 @@ def main():
     # Initialize extractor
     extractor = JiraWorklogExtractor(JIRA_URL, JIRA_API_TOKEN)
 
-    # Get custom field and value from user
-    custom_field = input("Enter custom field name (e.g., 'ERP Activity'): ").strip()
-    value = input("Enter value to search for: ").strip()
-
     # Collect all related issues
-    issue_keys = extractor.collect_all_related_issues(custom_field, value)
+    issue_keys = extractor.collect_all_related_issues()
 
     if not issue_keys:
         print("No issues found matching the criteria")

@@ -21,16 +21,19 @@ python extract_worklogs.py
 
 The script outputs:
 - Console summary with total hours and breakdown by author
-- CSV file: `zyn_worklogs_<ERP_ACTIVITY>_<timestamp>.csv`
+- CSV file: `zyn_worklogs_<timestamp>.csv`
+- HTML report: `zyn_worklogs_<timestamp>.html` with interactive visualizations
 
 ## Configuration
 
-Before running, update these values in `extract_worklogs.py:14-19`:
+Before running, update these values in `extract_worklogs.py:15-20`:
 
 - **JIRA_URL**: Jira instance URL
-- **JIRA_EMAIL**: User email
+- **JIRA_EMAIL**: User email (not currently used with Bearer auth)
 - **JIRA_API_TOKEN**: API token from https://id.atlassian.com/manage-profile/security/api-tokens
-- **CUSTOM_FIELD_ERP_ACTIVITY**: Custom field ID for "ERP Activity" (find via browser DevTools on Jira issue API response at `/rest/api/3/issue/[KEY]`)
+- **PROJECT_KEY**: The Jira project key (default: "ZYN")
+- **ERP_ACTIVITY_FILTER**: The value to filter on (e.g., "ProjectTask-00000007118797")
+- **LOG_LEVEL**: 1 = standard output, 2 = debug output with [DEBUG] messages
 
 The `config.json` file exists as a template but is not currently used by the script.
 
@@ -50,36 +53,44 @@ This ensures comprehensive worklog extraction across the entire project scope, n
 
 ### API Integration
 
-- Uses Jira REST API v3 with Basic Auth (email + API token)
+- Uses Jira REST API v2 with Bearer token authentication
 - Implements pagination for large result sets (`search_issues` method)
 - All API calls use `requests.raise_for_status()` for error handling
+- Debug logging available for all API calls when `LOG_LEVEL = 2`
 
 ### Worklog Extraction
 
 The `extract_worklogs` method:
+- Fetches issue metadata (type, epic link) for each issue
 - Iterates through all collected issue keys
-- Calls `/rest/api/3/issue/{key}/worklog` for each issue
-- Parses nested comment structure from Jira's Atlassian Document Format
+- Calls `/rest/api/2/issue/{key}/worklog` for each issue
+- Parses comment structure handling both string and Atlassian Document Format
 - Handles errors gracefully to continue processing remaining issues
+- Caches issue metadata to avoid duplicate API calls
 
 ### Output Generation
 
 - `generate_summary`: Aggregates hours by author using `defaultdict`
-- `export_to_csv`: Writes structured CSV with hours converted from seconds to decimal format
-
-## Custom Field Discovery
-
-The ERP Activity field is a Jira custom field. To find the field ID:
-1. Open any Jira issue in browser
-2. Open DevTools (F12) → Network tab
-3. Reload page and find `/rest/api/3/issue/[KEY]` request
-4. Search response JSON for "ERP Activity" to find the `customfield_XXXXX` ID
-5. Update `CUSTOM_FIELD_ERP_ACTIVITY` constant
+- `export_to_csv`: Writes structured CSV with issue type, epic link, and worklog details
+- `export_to_html`: Generates interactive HTML report with:
+  - Summary dashboard with key metrics
+  - Hours by author with expandable details
+  - Hours by issue breakdown
+  - Complete worklog entries table with issue type and epic link columns
+  - Visual progress bars and percentage distributions
 
 ## Modifying Filters
 
 To change the ERP Activity filter or project:
-- `ERP_ACTIVITY_FILTER`: The value to filter on (line 18)
-- `PROJECT_KEY`: The Jira project key (line 17)
+- `ERP_ACTIVITY_FILTER`: The value to filter on (line 19)
+- `PROJECT_KEY`: The Jira project key (line 18)
 
-To add date filtering, modify `extract_worklogs` to filter worklogs by the `started` field.
+The script searches using JQL: `project = {PROJECT_KEY} AND "ERP Activity" ~ "{ERP_ACTIVITY_FILTER}"`
+
+## Key Features
+
+- **Configurable logging**: Set `LOG_LEVEL = 2` to see detailed API calls, JQL queries, and responses
+- **Issue metadata**: Automatically fetches issue type and epic link for each worklog
+- **Robust comment parsing**: Handles both plain text and Atlassian Document Format comments
+- **Interactive HTML reports**: Click "View Details" on any author to see their individual worklog entries
+- **Three-stage collection**: Ensures comprehensive coverage by expanding epics and following links

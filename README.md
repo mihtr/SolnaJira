@@ -4,12 +4,15 @@ This tool extracts worklogs from Jira for the ZYN project, filtered by ERP Activ
 
 ## Features
 
-- Finds all issues with specific ERP Activity value
+- Finds all issues with specific ERP Activity value using JQL
 - Identifies epics and includes all issues within those epics
 - Includes all issues linked to matched issues
-- Extracts worklogs with detailed information
-- Exports results to CSV
+- Extracts worklogs with detailed information including issue type and epic links
+- Exports results to CSV and interactive HTML reports
 - Generates summary statistics by author
+- Bearer token authentication
+- Configurable log levels (standard/debug)
+- Comprehensive three-stage collection process
 
 ## Setup
 
@@ -21,65 +24,50 @@ pip install requests
 
 ### 2. Configure Jira Connection
 
-Update the configuration in `config.json` or directly in `extract_worklogs.py`:
+Update the configuration in `extract_worklogs.py` (lines 15-20):
 
 - **JIRA_URL**: Your Jira instance URL (e.g., `https://yourcompany.atlassian.net`)
 - **JIRA_EMAIL**: Your Jira email address
 - **JIRA_API_TOKEN**: Your Jira API token ([Create one here](https://id.atlassian.com/manage-profile/security/api-tokens))
 - **PROJECT_KEY**: The Jira project key (default: `ZYN`)
 - **ERP_ACTIVITY_FILTER**: The ERP Activity value to filter by (default: `ProjectTask-00000007118797`)
-- **CUSTOM_FIELD_ERP_ACTIVITY**: The custom field ID for ERP Activity
-
-### 3. Find Your Custom Field ID
-
-To find the custom field ID for "ERP Activity":
-
-1. Go to Jira and view any issue
-2. Open browser developer tools (F12)
-3. Go to Network tab
-4. Reload the page
-5. Find the API call to `/rest/api/3/issue/[ISSUE-KEY]`
-6. Look in the response for your field name and note the field ID (e.g., `customfield_10234`)
-7. Update `CUSTOM_FIELD_ERP_ACTIVITY` in the script
+- **LOG_LEVEL**: 1 for standard output, 2 for debug output with detailed API calls
 
 ## Usage
-
-### Basic Usage
 
 ```bash
 python extract_worklogs.py
 ```
 
-### Using Configuration File
-
-To load settings from `config.json`, modify the script to read from the config file:
-
-```python
-import json
-
-with open('config.json', 'r') as f:
-    config = json.load(f)
-
-extractor = JiraWorklogExtractor(
-    config['jira_url'],
-    config['jira_email'],
-    config['jira_api_token']
-)
-```
+The script will:
+1. Search for issues using the configured ERP Activity filter
+2. Expand epics to include all child issues
+3. Find all linked issues
+4. Extract worklogs from all collected issues
+5. Generate both CSV and HTML reports
 
 ## Output
 
 The script generates:
 
 1. **Console Output**: Progress updates and summary statistics
-2. **CSV File**: Detailed worklog entries with columns:
+2. **CSV File** (`zyn_worklogs_<timestamp>.csv`): Detailed worklog entries with columns:
    - `issue_key`: Jira issue key
+   - `issue_type`: Issue type (Story, Task, Bug, Epic, etc.)
+   - `epic_link`: Epic this issue belongs to
    - `author`: Name of person who logged time
    - `author_email`: Email of author
    - `time_spent`: Time in human-readable format (e.g., "2h 30m")
    - `time_spent_hours`: Time in hours (decimal)
    - `started`: When the work was started
    - `comment`: Worklog comment
+
+3. **HTML Report** (`zyn_worklogs_<timestamp>.html`): Interactive report with:
+   - Summary dashboard with total hours, entries, contributors, and issues
+   - Hours by Author with expandable detail views
+   - Hours by Issue with contributor breakdown
+   - Complete worklog entries table with filtering capabilities
+   - Visual progress bars and percentage distributions
 
 ### Example Output
 
@@ -130,35 +118,31 @@ The extractor follows this process:
 
 6. **Generate Reports**: Creates a summary and exports detailed data to CSV
 
-## Customization
+## Configuration
 
-### Filter by Date Range
+### Log Levels
 
-Add date filtering to the worklog extraction:
+Set `LOG_LEVEL` in the script to control output verbosity:
 
-```python
-def extract_worklogs(self, issue_keys, start_date=None, end_date=None):
-    # Filter worklogs by date
-    if start_date:
-        started_datetime = datetime.fromisoformat(worklog['started'].replace('Z', '+00:00'))
-        if started_datetime < start_date:
-            continue
-```
+- `LOG_LEVEL = 1` (Standard): Shows progress and summary information
+- `LOG_LEVEL = 2` (Debug): Shows all API calls, JQL queries, headers, and response details with `[DEBUG]` prefix
 
-### Export to Excel
+### Authentication
 
-Install `openpyxl` and add Excel export:
+The script uses Bearer token authentication with the Jira REST API v2. Ensure your API token has sufficient permissions to:
+- Read issues in the project
+- Access custom fields
+- View worklogs
 
-```bash
-pip install openpyxl pandas
-```
+## Architecture
 
-```python
-import pandas as pd
+### Three-Stage Collection Process
 
-df = pd.DataFrame(worklogs)
-df.to_excel('worklogs.xlsx', index=False)
-```
+1. **Direct Match**: Uses JQL to find all issues where "ERP Activity" matches the filter value
+2. **Epic Expansion**: Identifies epics from direct matches, then collects ALL issues within those epics
+3. **Linked Issues**: For all collected issues, follows issue links to capture the full scope of related work
+
+This ensures comprehensive worklog extraction across the entire project scope.
 
 ## Troubleshooting
 
