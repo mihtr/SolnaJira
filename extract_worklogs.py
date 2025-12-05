@@ -772,13 +772,14 @@ class JiraWorklogExtractor:
             by_product_item[product_item]['entries'] += 1
             by_product_item[product_item]['issues'].add(issue_key)
 
-            # Aggregate by Component (can have multiple)
+            # Aggregate by Component (keep multiple components together, don't split)
             components = worklog.get('components', [])
             if components:
-                for component in components:
-                    by_component[component]['hours'] += seconds / 3600
-                    by_component[component]['entries'] += 1
-                    by_component[component]['issues'].add(issue_key)
+                # Join multiple components with comma to keep them together
+                component_key = ', '.join(sorted(components))
+                by_component[component_key]['hours'] += seconds / 3600
+                by_component[component_key]['entries'] += 1
+                by_component[component_key]['issues'].add(issue_key)
             else:
                 by_component['None']['hours'] += seconds / 3600
                 by_component['None']['entries'] += 1
