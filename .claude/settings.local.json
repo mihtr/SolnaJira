@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python extract_worklogs.py:*)",
+      "Bash(py:*)",
+      "Bash(git init:*)",
+      "mcp__mcp-github-server__get_me",
+      "mcp__mcp-github-server__create_repository",
+      "Bash(git add:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}
