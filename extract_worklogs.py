@@ -393,6 +393,11 @@ class JiraWorklogExtractor:
             print("No worklogs to export")
             return
 
+        # Helper function to create Jira issue link
+        def make_issue_link(issue_key):
+            jira_url = f"{self.jira_url}/browse/{issue_key}"
+            return f'<a href="{jira_url}" target="_blank" style="color: #0052CC; text-decoration: none; font-weight: bold;">{issue_key}</a>'
+
         # Calculate summary statistics
         by_author = defaultdict(lambda: {'hours': 0, 'entries': 0, 'worklogs': []})
         by_issue = defaultdict(lambda: {'hours': 0, 'entries': 0, 'authors': set(), 'issue_type': '', 'epic_link': '', 'summary': ''})
@@ -777,10 +782,11 @@ class JiraWorklogExtractor:
             for worklog in sorted(stats['worklogs'], key=lambda x: x['started'], reverse=True):
                 comment = worklog['comment'] if worklog['comment'] else 'No comment'
                 epic_display = f" • Epic: {worklog['epic_link']}" if worklog['epic_link'] else ''
+                issue_link = make_issue_link(worklog['issue_key'])
                 html += f"""
                                 <div class="worklog-entry">
                                     <div class="worklog-meta">
-                                        <strong>{worklog['issue_key']}</strong> ({worklog['issue_type']}) •
+                                        {issue_link} ({worklog['issue_type']}) •
                                         {worklog['time_spent']} •
                                         {worklog['started'][:10]}{epic_display}
                                     </div>
@@ -823,9 +829,10 @@ class JiraWorklogExtractor:
             contributors = ', '.join(sorted(stats['authors']))
             epic_link = stats['epic_link'] if stats['epic_link'] else '-'
             summary = stats['summary'] if stats['summary'] else '-'
+            issue_link = make_issue_link(issue_key)
             html += f"""
                     <tr>
-                        <td><strong>{issue_key}</strong></td>
+                        <td>{issue_link}</td>
                         <td>{summary}</td>
                         <td>{stats['issue_type']}</td>
                         <td>{epic_link}</td>
@@ -872,9 +879,10 @@ class JiraWorklogExtractor:
             epic_link = worklog['epic_link'] if worklog['epic_link'] else '-'
             summary = worklog['summary'][:50] + '...' if len(worklog['summary']) > 50 else worklog['summary']
             summary = summary if summary else '-'
+            issue_link = make_issue_link(worklog['issue_key'])
             html += f"""
                     <tr>
-                        <td><strong>{worklog['issue_key']}</strong></td>
+                        <td>{issue_link}</td>
                         <td>{summary}</td>
                         <td>{worklog['issue_type']}</td>
                         <td>{epic_link}</td>
