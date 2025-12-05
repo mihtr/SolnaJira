@@ -1059,6 +1059,40 @@ class JiraWorklogExtractor:
                     {f'<div style="font-size: 0.85em; color: #666; margin-top: 5px;">{(most_common_type[1]["count"] / len(by_issue) * 100):.1f}% of all issues</div>' if most_common_type else ''}
                 </div>
             </div>
+
+            <!-- Hours vs Estimate Analysis -->
+            <div style="background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%); padding: 25px; border-radius: 12px; color: white; margin-top: 25px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
+                <div style="font-size: 1.3em; font-weight: bold; margin-bottom: 15px;">⚠️ Hours vs Original Estimate Analysis</div>
+                <div style="background: rgba(255, 255, 255, 0.15); padding: 20px; border-radius: 8px; backdrop-filter: blur(10px);">
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; margin-bottom: 20px;">
+                        <div>
+                            <div style="font-size: 0.9em; opacity: 0.9; margin-bottom: 5px;">Original Estimate</div>
+                            <div style="font-size: 2em; font-weight: bold;">500h</div>
+                        </div>
+                        <div>
+                            <div style="font-size: 0.9em; opacity: 0.9; margin-bottom: 5px;">Actual Hours Logged</div>
+                            <div style="font-size: 2em; font-weight: bold;">{total_hours:.0f}h</div>
+                        </div>
+                        <div>
+                            <div style="font-size: 0.9em; opacity: 0.9; margin-bottom: 5px;">Variance</div>
+                            <div style="font-size: 2em; font-weight: bold;">+{(total_hours - 500):.0f}h</div>
+                            <div style="font-size: 0.9em; opacity: 0.9; margin-top: 5px;">({((total_hours / 500 - 1) * 100):.0f}% over estimate)</div>
+                        </div>
+                    </div>
+                    <div style="border-top: 1px solid rgba(255,255,255,0.3); padding-top: 15px; margin-top: 15px;">
+                        <div style="font-size: 1.1em; font-weight: bold; margin-bottom: 10px;">🔍 Possible Reasons for Variance:</div>
+                        <ul style="margin: 10px 0; padding-left: 20px; line-height: 1.8;">
+                            <li style="margin-bottom: 8px;"><strong>Cross-project time logging:</strong> Hours from Unite project may have been logged here</li>
+                            <li style="margin-bottom: 8px;"><strong>General development work:</strong> Development activities that should have been logged to IPP Development project</li>
+                            <li style="margin-bottom: 8px;"><strong>Scope expansion:</strong> Additional requirements beyond original estimate (594 sub-tasks, {len(by_issue)} total issues)</li>
+                            <li style="margin-bottom: 8px;"><strong>Underestimation:</strong> Original estimate may not have accounted for full project complexity</li>
+                        </ul>
+                        <div style="background: rgba(255,255,255,0.2); padding: 12px; border-radius: 6px; margin-top: 15px; font-size: 0.95em;">
+                            💡 <strong>Recommendation:</strong> Review worklog entries to identify time logged from Unite project or general IPP development that should be reclassified to correct project codes.
+                        </div>
+                    </div>
+                </div>
+            </div>
         </div>
 
         <div class="section" id="year-month">
