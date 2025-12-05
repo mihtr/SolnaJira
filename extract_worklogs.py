@@ -616,13 +616,14 @@ class JiraWorklogExtractor:
                 by_component['None']['entries'] += 1
                 by_component['None']['issues'].add(issue_key)
 
-            # Aggregate by Label (can have multiple)
+            # Aggregate by Label (keep multiple labels together, don't split)
             labels = worklog.get('labels', [])
             if labels:
-                for label in labels:
-                    by_label[label]['hours'] += seconds / 3600
-                    by_label[label]['entries'] += 1
-                    by_label[label]['issues'].add(issue_key)
+                # Join multiple labels with comma to keep them together
+                label_key = ', '.join(sorted(labels))
+                by_label[label_key]['hours'] += seconds / 3600
+                by_label[label_key]['entries'] += 1
+                by_label[label_key]['issues'].add(issue_key)
             else:
                 by_label['None']['hours'] += seconds / 3600
                 by_label['None']['entries'] += 1
