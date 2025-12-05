@@ -5,6 +5,8 @@ Includes all issues linked to epics that match the filter.
 
 import requests
 from requests.auth import HTTPBasicAuth
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 import json
 from datetime import datetime
 from collections import defaultdict
@@ -47,12 +49,35 @@ class JiraWorklogExtractor:
             "Authorization": f"Bearer {api_token}"
         }
 
+        # Set up HTTP session with retry logic
+        self.session = self._create_session_with_retries()
+
         # Set up cache directory
         self.cache_dir = Path(cache_dir)
         if self.use_cache:
             self.cache_dir.mkdir(exist_ok=True)
             if self.log_level >= 2:
                 print(f"[DEBUG] Cache enabled: {self.cache_dir.absolute()} (TTL: {cache_ttl}s)")
+
+    def _create_session_with_retries(self):
+        """Create HTTP session with automatic retry logic"""
+        session = requests.Session()
+        session.headers.update(self.headers)
+
+        # Configure retry strategy
+        retry_strategy = Retry(
+            total=3,  # Maximum number of retries
+            backoff_factor=1,  # Wait 1, 2, 4 seconds between retries
+            status_forcelist=[429, 500, 502, 503, 504],  # Retry on these HTTP status codes
+            allowed_methods=["GET", "POST"],  # Only retry safe methods
+            raise_on_status=False  # Don't raise exception, let us handle it
+        )
+
+        adapter = HTTPAdapter(max_retries=retry_strategy)
+        session.mount("http://", adapter)
+        session.mount("https://", adapter)
+
+        return session
 
     def _get_cache_key(self, prefix, identifier):
         """Generate a cache key from prefix and identifier"""
@@ -126,7 +151,7 @@ class JiraWorklogExtractor:
                 print(f"[DEBUG] Parameters: {params}")
                 print(f"[DEBUG] Headers: {self.headers}")
 
-            response = requests.get(url, headers=self.headers, params=params)
+            response = self.session.get(url, params=params)
 
             if self.log_level >= 2:
                 print(f"[DEBUG] Response Status: {response.status_code}")
@@ -167,7 +192,7 @@ class JiraWorklogExtractor:
             print(f"\n[DEBUG] Getting linked issues for {issue_key}")
             print(f"[DEBUG] API Call: GET {url}")
 
-        response = requests.get(url, headers=self.headers, params=params)
+        response = self.session.get(url, params=params)
 
         if self.log_level >= 2:
             print(f"[DEBUG] Response Status: {response.status_code}")
@@ -206,7 +231,7 @@ class JiraWorklogExtractor:
         if self.log_level >= 2:
             print(f"[DEBUG] Getting worklogs for {issue_key}")
 
-        response = requests.get(url, headers=self.headers)
+        response = self.session.get(url)
 
         if self.log_level >= 2:
             print(f"[DEBUG] Response Status: {response.status_code}")
@@ -240,7 +265,7 @@ class JiraWorklogExtractor:
         if self.log_level >= 2:
             print(f"\n[DEBUG] Getting subtasks for {issue_key}")
 
-        response = requests.get(url, headers=self.headers, params=params)
+        response = self.session.get(url, params=params)
         response.raise_for_status()
         data = response.json()
 
@@ -332,7 +357,7 @@ class JiraWorklogExtractor:
         return sorted(all_issue_keys)
 
     def get_issue_metadata(self, issue_key):
-        """Get issue type, epic link, and summary for an issue (with caching)"""
+        """Get issue type, epic link, summary, components, labels, and team for an issue (with caching)"""
         # Check cache first
         cache_key = self._get_cache_key("metadata", issue_key)
         cached_data = self._get_from_cache(cache_key)
@@ -340,16 +365,40 @@ class JiraWorklogExtractor:
             return cached_data
 
         url = f"{self.jira_url}/rest/api/2/issue/{issue_key}"
-        params = {"fields": "issuetype,customfield_10014,summary"}  # customfield_10014 is typically Epic Link
+        # Fetch additional fields: components, labels, customfield_10014 (Epic Link), customfield_11440 (Product Item), customfield_10076 (Team)
+        params = {"fields": "issuetype,customfield_10014,summary,components,labels,customfield_11440,customfield_10076"}
 
-        response = requests.get(url, headers=self.headers, params=params)
+        response = self.session.get(url, params=params)
         response.raise_for_status()
         data = response.json()
 
+        fields = data.get('fields', {})
+
+        # Extract components (array of objects with 'name')
+        components = fields.get('components', [])
+        component_names = [comp.get('name', '') for comp in components if comp.get('name')]
+
+        # Extract labels (array of strings)
+        labels = fields.get('labels', [])
+
+        # Extract Product Item (custom field)
+        product_item = fields.get('customfield_11440', '')
+        if isinstance(product_item, dict):
+            product_item = product_item.get('value', '') or product_item.get('name', '')
+
+        # Extract Team (custom field)
+        team = fields.get('customfield_10076', '')
+        if isinstance(team, dict):
+            team = team.get('value', '') or team.get('name', '')
+
         metadata = {
-            'issue_type': data.get('fields', {}).get('issuetype', {}).get('name', 'Unknown'),
-            'epic_link': data.get('fields', {}).get('customfield_10014', ''),
-            'summary': data.get('fields', {}).get('summary', '')
+            'issue_type': fields.get('issuetype', {}).get('name', 'Unknown'),
+            'epic_link': fields.get('customfield_10014', ''),
+            'summary': fields.get('summary', ''),
+            'components': component_names,
+            'labels': labels,
+            'product_item': product_item or 'None',
+            'team': team or 'None'
         }
 
         # Save to cache
@@ -395,6 +444,10 @@ class JiraWorklogExtractor:
                     'issue_type': metadata['issue_type'],
                     'epic_link': metadata['epic_link'],
                     'summary': metadata['summary'],
+                    'components': metadata.get('components', []),
+                    'labels': metadata.get('labels', []),
+                    'product_item': metadata.get('product_item', 'None'),
+                    'team': metadata.get('team', 'None'),
                     'worklog_id': worklog['id'],
                     'author': worklog['author'].get('displayName', 'Unknown'),
                     'author_email': worklog['author'].get('emailAddress', ''),
@@ -511,6 +564,10 @@ class JiraWorklogExtractor:
         by_author = defaultdict(lambda: {'hours': 0, 'entries': 0, 'worklogs': []})
         by_issue = defaultdict(lambda: {'hours': 0, 'entries': 0, 'authors': set(), 'issue_type': '', 'epic_link': '', 'summary': ''})
         by_year_month = defaultdict(lambda: {'hours': 0, 'entries': 0})
+        by_product_item = defaultdict(lambda: {'hours': 0, 'entries': 0, 'issues': set()})
+        by_component = defaultdict(lambda: {'hours': 0, 'entries': 0, 'issues': set()})
+        by_label = defaultdict(lambda: {'hours': 0, 'entries': 0, 'issues': set()})
+        by_team = defaultdict(lambda: {'hours': 0, 'entries': 0, 'issues': set()})
         total_seconds = 0
 
         for worklog in worklogs:
@@ -537,6 +594,42 @@ class JiraWorklogExtractor:
                 by_year_month[year_month]['hours'] += seconds / 3600
                 by_year_month[year_month]['entries'] += 1
 
+            # Aggregate by Product Item
+            product_item = worklog.get('product_item', 'None')
+            by_product_item[product_item]['hours'] += seconds / 3600
+            by_product_item[product_item]['entries'] += 1
+            by_product_item[product_item]['issues'].add(issue_key)
+
+            # Aggregate by Component (can have multiple)
+            components = worklog.get('components', [])
+            if components:
+                for component in components:
+                    by_component[component]['hours'] += seconds / 3600
+                    by_component[component]['entries'] += 1
+                    by_component[component]['issues'].add(issue_key)
+            else:
+                by_component['None']['hours'] += seconds / 3600
+                by_component['None']['entries'] += 1
+                by_component['None']['issues'].add(issue_key)
+
+            # Aggregate by Label (can have multiple)
+            labels = worklog.get('labels', [])
+            if labels:
+                for label in labels:
+                    by_label[label]['hours'] += seconds / 3600
+                    by_label[label]['entries'] += 1
+                    by_label[label]['issues'].add(issue_key)
+            else:
+                by_label['None']['hours'] += seconds / 3600
+                by_label['None']['entries'] += 1
+                by_label['None']['issues'].add(issue_key)
+
+            # Aggregate by Team
+            team = worklog.get('team', 'None')
+            by_team[team]['hours'] += seconds / 3600
+            by_team[team]['entries'] += 1
+            by_team[team]['issues'].add(issue_key)
+
             total_seconds += seconds
 
         total_hours = total_seconds / 3600
@@ -545,6 +638,10 @@ class JiraWorklogExtractor:
         authors_sorted = sorted(by_author.items(), key=lambda x: x[1]['hours'], reverse=True)
         issues_sorted = sorted(by_issue.items(), key=lambda x: x[1]['hours'], reverse=True)
         year_month_sorted = sorted(by_year_month.items(), key=lambda x: x[0])  # Sort by date
+        product_items_sorted = sorted(by_product_item.items(), key=lambda x: x[1]['hours'], reverse=True)
+        components_sorted = sorted(by_component.items(), key=lambda x: x[1]['hours'], reverse=True)
+        labels_sorted = sorted(by_label.items(), key=lambda x: x[1]['hours'], reverse=True)
+        teams_sorted = sorted(by_team.items(), key=lambda x: x[1]['hours'], reverse=True)
 
         # Generate HTML
         html = f"""<!DOCTYPE html>
@@ -1075,6 +1172,170 @@ class JiraWorklogExtractor:
 """
 
         html += f"""
+                </tbody>
+            </table>
+        </div>
+
+        <div class="section">
+            <h2 class="section-title">Hours by Product Item</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Product Item</th>
+                        <th>Hours</th>
+                        <th>Entries</th>
+                        <th>Issues</th>
+                        <th>% of Total</th>
+                        <th>Distribution</th>
+                    </tr>
+                </thead>
+                <tbody>
+"""
+
+        for product_item, stats in product_items_sorted:
+            percentage = (stats['hours'] / total_hours * 100) if total_hours > 0 else 0
+            issue_count = len(stats['issues'])
+            html += f"""
+                    <tr>
+                        <td>{product_item}</td>
+                        <td>{stats['hours']:.2f}h</td>
+                        <td>{stats['entries']}</td>
+                        <td>{issue_count}</td>
+                        <td>{percentage:.1f}%</td>
+                        <td>
+                            <div class="progress-bar">
+                                <div class="progress-fill" style="width: {percentage}%">
+                                    {percentage:.1f}%
+                                </div>
+                            </div>
+                        </td>
+                    </tr>
+"""
+
+        html += """
+                </tbody>
+            </table>
+        </div>
+
+        <div class="section">
+            <h2 class="section-title">Hours by Component</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Component</th>
+                        <th>Hours</th>
+                        <th>Entries</th>
+                        <th>Issues</th>
+                        <th>% of Total</th>
+                        <th>Distribution</th>
+                    </tr>
+                </thead>
+                <tbody>
+"""
+
+        for component, stats in components_sorted:
+            percentage = (stats['hours'] / total_hours * 100) if total_hours > 0 else 0
+            issue_count = len(stats['issues'])
+            html += f"""
+                    <tr>
+                        <td>{component}</td>
+                        <td>{stats['hours']:.2f}h</td>
+                        <td>{stats['entries']}</td>
+                        <td>{issue_count}</td>
+                        <td>{percentage:.1f}%</td>
+                        <td>
+                            <div class="progress-bar">
+                                <div class="progress-fill" style="width: {percentage}%">
+                                    {percentage:.1f}%
+                                </div>
+                            </div>
+                        </td>
+                    </tr>
+"""
+
+        html += """
+                </tbody>
+            </table>
+        </div>
+
+        <div class="section">
+            <h2 class="section-title">Hours by Label</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Label</th>
+                        <th>Hours</th>
+                        <th>Entries</th>
+                        <th>Issues</th>
+                        <th>% of Total</th>
+                        <th>Distribution</th>
+                    </tr>
+                </thead>
+                <tbody>
+"""
+
+        for label, stats in labels_sorted:
+            percentage = (stats['hours'] / total_hours * 100) if total_hours > 0 else 0
+            issue_count = len(stats['issues'])
+            html += f"""
+                    <tr>
+                        <td>{label}</td>
+                        <td>{stats['hours']:.2f}h</td>
+                        <td>{stats['entries']}</td>
+                        <td>{issue_count}</td>
+                        <td>{percentage:.1f}%</td>
+                        <td>
+                            <div class="progress-bar">
+                                <div class="progress-fill" style="width: {percentage}%">
+                                    {percentage:.1f}%
+                                </div>
+                            </div>
+                        </td>
+                    </tr>
+"""
+
+        html += """
+                </tbody>
+            </table>
+        </div>
+
+        <div class="section">
+            <h2 class="section-title">Hours by Team</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Team</th>
+                        <th>Hours</th>
+                        <th>Entries</th>
+                        <th>Issues</th>
+                        <th>% of Total</th>
+                        <th>Distribution</th>
+                    </tr>
+                </thead>
+                <tbody>
+"""
+
+        for team, stats in teams_sorted:
+            percentage = (stats['hours'] / total_hours * 100) if total_hours > 0 else 0
+            issue_count = len(stats['issues'])
+            html += f"""
+                    <tr>
+                        <td>{team}</td>
+                        <td>{stats['hours']:.2f}h</td>
+                        <td>{stats['entries']}</td>
+                        <td>{issue_count}</td>
+                        <td>{percentage:.1f}%</td>
+                        <td>
+                            <div class="progress-bar">
+                                <div class="progress-fill" style="width: {percentage}%">
+                                    {percentage:.1f}%
+                                </div>
+                            </div>
+                        </td>
+                    </tr>
+"""
+
+        html += """
                 </tbody>
             </table>
         </div>
