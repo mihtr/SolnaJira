@@ -51,6 +51,17 @@ jobs:
           sed -i "s/Version: $CURRENT_VERSION/Version: $NEW_VERSION/" CLAUDE.md
         fi
 
+        # Update version in IMPROVEMENTS.md if present
+        if grep -q "Version: $CURRENT_VERSION" IMPROVEMENTS.md 2>/dev/null; then
+          sed -i "s/Version: $CURRENT_VERSION/Version: $NEW_VERSION/" IMPROVEMENTS.md
+        fi
+
+        # Update "Last Updated" timestamp in IMPROVEMENTS.md
+        CURRENT_DATE=$(date +%Y-%m-%d)
+        if grep -q "Last Updated:" IMPROVEMENTS.md 2>/dev/null; then
+          sed -i "s/Last Updated: .*/Last Updated: $CURRENT_DATE/" IMPROVEMENTS.md
+        fi
+
         echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
 
     - name: Commit version bump
@@ -63,7 +74,7 @@ jobs:
           exit 0
         fi
 
-        git add extract_worklogs.py README.md CLAUDE.md
+        git add extract_worklogs.py README.md CLAUDE.md IMPROVEMENTS.md
         git commit -m "chore: bump version to ${{ steps.bump.outputs.new_version }} [skip ci]"
 
     - name: Push changes

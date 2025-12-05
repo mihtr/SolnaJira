@@ -10,22 +10,32 @@ from datetime import datetime
 from collections import defaultdict
 import csv
 from pathlib import Path
+import os
+import argparse
+from tqdm import tqdm
+from dotenv import load_dotenv
 
 # Version
 VERSION = "1.0.0"
 
-# Configuration
-JIRA_URL = "https://your-jira-instance.atlassian.net"  # Update this
-JIRA_EMAIL = "your-email@example.com"  # Update this
-JIRA_API_TOKEN = "your-api-token-here"  # Update this - Get from https://id.atlassian.com/manage-profile/security/api-tokens
-PROJECT_KEY = "ZYN"
-ERP_ACTIVITY_FILTER = "ProjectTask-00000007118797"
-LOG_LEVEL = 1  # 1 = standard, 2 = debug (shows [DEBUG] messages)
+# Load environment variables from .env file
+load_dotenv()
+
+# Configuration - Load from environment variables with fallback to defaults
+JIRA_URL = os.getenv('JIRA_URL', 'https://your-jira-instance.atlassian.net')
+JIRA_EMAIL = os.getenv('JIRA_EMAIL', 'your-email@example.com')
+JIRA_API_TOKEN = os.getenv('JIRA_API_TOKEN', 'your-api-token-here')
+PROJECT_KEY = os.getenv('PROJECT_KEY', 'ZYN')
+ERP_ACTIVITY_FILTER = os.getenv('ERP_ACTIVITY_FILTER', 'ProjectTask-00000007118797')
+LOG_LEVEL = int(os.getenv('LOG_LEVEL', '1'))  # 1 = standard, 2 = debug (shows [DEBUG] messages)
 
 class JiraWorklogExtractor:
-    def __init__(self, jira_url, api_token):
+    def __init__(self, jira_url, api_token, project_key=None, erp_activity_filter=None, log_level=1):
         self.jira_url = jira_url.rstrip('/')
         self.api_token = api_token
+        self.project_key = project_key or PROJECT_KEY
+        self.erp_activity_filter = erp_activity_filter or ERP_ACTIVITY_FILTER
+        self.log_level = log_level
         self.headers = {
             "Accept": "application/json",
             "Authorization": f"Bearer {api_token}"
@@ -48,7 +58,7 @@ class JiraWorklogExtractor:
                 "fields": ",".join(fields)
             }
 
-            if LOG_LEVEL >= 2:
+            if self.log_level >= 2:
                 print(f"\n[DEBUG] API Call: GET {url}")
                 print(f"[DEBUG] JQL: {jql}")
                 print(f"[DEBUG] Parameters: {params}")
@@ -56,11 +66,11 @@ class JiraWorklogExtractor:
 
             response = requests.get(url, headers=self.headers, params=params)
 
-            if LOG_LEVEL >= 2:
+            if self.log_level >= 2:
                 print(f"[DEBUG] Response Status: {response.status_code}")
 
             if response.status_code != 200:
-                if LOG_LEVEL >= 2:
+                if self.log_level >= 2:
                     print(f"[DEBUG] Response Body: {response.text[:500]}")
 
             response.raise_for_status()
@@ -69,7 +79,7 @@ class JiraWorklogExtractor:
             batch_size = len(data['issues'])
             all_issues.extend(data['issues'])
 
-            if LOG_LEVEL >= 2:
+            if self.log_level >= 2:
                 print(f"[DEBUG] Retrieved {batch_size} issues (total so far: {len(all_issues)}/{data['total']})")
             else:
                 print(f"  Fetching issues: {len(all_issues)}/{data['total']}")
@@ -83,7 +93,7 @@ class JiraWorklogExtractor:
     def get_epic_issues(self, epic_key):
         """Get all issues in an epic"""
         print(f"  Searching for issues in epic {epic_key}...")
-        jql = f'project = {PROJECT_KEY} AND "Epic Link" = {epic_key}'
+        jql = f'project = {self.project_key} AND "Epic Link" = {epic_key}'
         return self.search_issues(jql)
 
     def get_linked_issues(self, issue_key):
@@ -91,17 +101,17 @@ class JiraWorklogExtractor:
         url = f"{self.jira_url}/rest/api/2/issue/{issue_key}"
         params = {"fields": "issuelinks"}
 
-        if LOG_LEVEL >= 2:
+        if self.log_level >= 2:
             print(f"\n[DEBUG] Getting linked issues for {issue_key}")
             print(f"[DEBUG] API Call: GET {url}")
 
         response = requests.get(url, headers=self.headers, params=params)
 
-        if LOG_LEVEL >= 2:
+        if self.log_level >= 2:
             print(f"[DEBUG] Response Status: {response.status_code}")
 
         if response.status_code != 200:
-            if LOG_LEVEL >= 2:
+            if self.log_level >= 2:
                 print(f"[DEBUG] Response Body: {response.text[:500]}")
 
         response.raise_for_status()
@@ -125,16 +135,16 @@ class JiraWorklogExtractor:
         """Get all worklogs for an issue"""
         url = f"{self.jira_url}/rest/api/2/issue/{issue_key}/worklog"
 
-        if LOG_LEVEL >= 2:
+        if self.log_level >= 2:
             print(f"[DEBUG] Getting worklogs for {issue_key}")
 
         response = requests.get(url, headers=self.headers)
 
-        if LOG_LEVEL >= 2:
+        if self.log_level >= 2:
             print(f"[DEBUG] Response Status: {response.status_code}")
 
         if response.status_code != 200:
-            if LOG_LEVEL >= 2:
+            if self.log_level >= 2:
                 print(f"[DEBUG] Response Body: {response.text[:500]}")
 
         response.raise_for_status()
@@ -148,7 +158,7 @@ class JiraWorklogExtractor:
 
     def find_issues_by_erp_activity(self):
         """Find all issues with ERP Activity filter"""
-        jql = f'project = {PROJECT_KEY} AND "ERP Activity" ~ "{ERP_ACTIVITY_FILTER}"'
+        jql = f'project = {self.project_key} AND "ERP Activity" ~ "{self.erp_activity_filter}"'
         return self.search_issues(jql)
 
     def get_subtasks(self, issue_key):
@@ -156,7 +166,7 @@ class JiraWorklogExtractor:
         url = f"{self.jira_url}/rest/api/2/issue/{issue_key}"
         params = {"fields": "subtasks"}
 
-        if LOG_LEVEL >= 2:
+        if self.log_level >= 2:
             print(f"\n[DEBUG] Getting subtasks for {issue_key}")
 
         response = requests.get(url, headers=self.headers, params=params)
@@ -182,7 +192,7 @@ class JiraWorklogExtractor:
         print(f"\n{'='*70}")
         print(f"STARTING ISSUE COLLECTION")
         print(f"{'='*70}")
-        print(f'Searching for issues with "ERP Activity" ~ "{ERP_ACTIVITY_FILTER}"...')
+        print(f'Searching for issues with "ERP Activity" ~ "{self.erp_activity_filter}"...')
 
         # Step 1: Find all issues matching the ERP Activity
         direct_issues = self.find_issues_by_erp_activity()
@@ -223,32 +233,28 @@ class JiraWorklogExtractor:
         print(f"\n[STEP 4] Finding linked issues (checking {len(all_issue_keys)} issues)...")
         initial_keys = list(all_issue_keys)
         linked_count = 0
-        for i, issue_key in enumerate(initial_keys, 1):
-            if i % 20 == 0:
-                print(f"  Progress: {i}/{len(initial_keys)} issues checked, {linked_count} new links found")
+        for issue_key in tqdm(initial_keys, desc="Finding linked issues", unit="issue"):
             linked = self.get_linked_issues(issue_key)
             for linked_key in linked:
-                if linked_key.startswith(PROJECT_KEY):
+                if linked_key.startswith(self.project_key):
                     if linked_key not in all_issue_keys:
                         all_issue_keys.add(linked_key)
                         linked_count += 1
 
-        print(f"\n[STEP 4 COMPLETE] Added {linked_count} new linked issues")
+        print(f"[STEP 4 COMPLETE] Added {linked_count} new linked issues")
 
         # Step 4: Get all subtasks
         print(f"\n[STEP 5] Finding subtasks (checking {len(all_issue_keys)} issues)...")
         initial_keys_for_subtasks = list(all_issue_keys)
         subtask_count = 0
-        for i, issue_key in enumerate(initial_keys_for_subtasks, 1):
-            if i % 20 == 0:
-                print(f"  Progress: {i}/{len(initial_keys_for_subtasks)} issues checked, {subtask_count} subtasks found")
+        for issue_key in tqdm(initial_keys_for_subtasks, desc="Finding subtasks", unit="issue"):
             subtasks = self.get_subtasks(issue_key)
             for subtask_key in subtasks:
                 if subtask_key not in all_issue_keys:
                     all_issue_keys.add(subtask_key)
                     subtask_count += 1
 
-        print(f"\n[STEP 5 COMPLETE] Added {subtask_count} new subtasks")
+        print(f"[STEP 5 COMPLETE] Added {subtask_count} new subtasks")
         print(f"\n{'='*70}")
         print(f"ISSUE COLLECTION COMPLETE: {len(all_issue_keys)} total issues")
         print(f"{'='*70}\n")
@@ -275,10 +281,7 @@ class JiraWorklogExtractor:
         issue_metadata_cache = {}
 
         print(f"\nExtracting worklogs from {len(issue_keys)} issues...")
-        for i, issue_key in enumerate(issue_keys, 1):
-            if i % 10 == 0:
-                print(f"  Progress: {i}/{len(issue_keys)} issues processed")
-
+        for issue_key in tqdm(issue_keys, desc="Extracting worklogs", unit="issue"):
             try:
                 # Get issue metadata
                 if issue_key not in issue_metadata_cache:
@@ -287,8 +290,6 @@ class JiraWorklogExtractor:
                 metadata = issue_metadata_cache[issue_key]
 
                 worklogs = self.get_worklogs(issue_key)
-                if worklogs and LOG_LEVEL >= 1:
-                    print(f"    {issue_key}: Found {len(worklogs)} worklog(s)")
                 for worklog in worklogs:
                     # Handle comment field - can be string, dict, or None
                     comment = ''
@@ -427,7 +428,7 @@ class JiraWorklogExtractor:
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Jira Worklog Report - {PROJECT_KEY}</title>
+    <title>Jira Worklog Report - {self.project_key}</title>
     <style>
         * {{
             margin: 0;
@@ -659,7 +660,7 @@ class JiraWorklogExtractor:
     <div class="container">
         <div class="header">
             <h1>Jira Worklog Report</h1>
-            <div class="subtitle">Project: {PROJECT_KEY}</div>
+            <div class="subtitle">Project: {self.project_key}</div>
             <div class="subtitle">Version: {VERSION}</div>
             <div class="subtitle">Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</div>
         </div>
@@ -862,9 +863,90 @@ class JiraWorklogExtractor:
         print(f"HTML report exported to {filename}")
 
 
+def parse_arguments():
+    """Parse command-line arguments"""
+    parser = argparse.ArgumentParser(
+        description=f'Jira Worklog Extractor v{VERSION} - Extract worklogs from Jira filtered by ERP Activity',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog='''
+Examples:
+  # Use environment variables from .env file
+  python extract_worklogs.py
+
+  # Override with command-line arguments
+  python extract_worklogs.py --project ZYN --erp-activity ProjectTask-00000007118797
+
+  # Debug mode with custom output directory
+  python extract_worklogs.py --log-level 2 --output-dir ./reports
+
+  # Export only CSV
+  python extract_worklogs.py --format csv
+        '''
+    )
+
+    parser.add_argument('--project', '-p',
+                        default=PROJECT_KEY,
+                        help=f'Project key (default: {PROJECT_KEY})')
+
+    parser.add_argument('--erp-activity', '-e',
+                        default=ERP_ACTIVITY_FILTER,
+                        help=f'ERP Activity filter value (default: {ERP_ACTIVITY_FILTER})')
+
+    parser.add_argument('--jira-url',
+                        default=JIRA_URL,
+                        help=f'Jira instance URL (default: from env or {JIRA_URL})')
+
+    parser.add_argument('--jira-token',
+                        default=JIRA_API_TOKEN,
+                        help='Jira API token (default: from env)')
+
+    parser.add_argument('--output-dir', '-o',
+                        default='output',
+                        help='Output directory for reports (default: ./output)')
+
+    parser.add_argument('--log-level', '-l',
+                        type=int,
+                        choices=[1, 2],
+                        default=LOG_LEVEL,
+                        help='Log level: 1=standard, 2=debug (default: 1)')
+
+    parser.add_argument('--format', '-f',
+                        choices=['csv', 'html', 'both'],
+                        default='both',
+                        help='Output format (default: both)')
+
+    parser.add_argument('--version', '-v',
+                        action='version',
+                        version=f'%(prog)s {VERSION}')
+
+    return parser.parse_args()
+
+
 def main():
+    # Parse command-line arguments
+    args = parse_arguments()
+
+    # Display configuration
+    print(f"\n{'='*70}")
+    print(f"Jira Worklog Extractor v{VERSION}")
+    print(f"{'='*70}")
+    print(f"Configuration:")
+    print(f"  Jira URL: {args.jira_url}")
+    print(f"  Project: {args.project}")
+    print(f"  ERP Activity: {args.erp_activity}")
+    print(f"  Output Directory: {args.output_dir}")
+    print(f"  Log Level: {args.log_level}")
+    print(f"  Format: {args.format}")
+    print(f"{'='*70}\n")
+
     # Initialize extractor
-    extractor = JiraWorklogExtractor(JIRA_URL, JIRA_API_TOKEN)
+    extractor = JiraWorklogExtractor(
+        jira_url=args.jira_url,
+        api_token=args.jira_token,
+        project_key=args.project,
+        erp_activity_filter=args.erp_activity,
+        log_level=args.log_level
+    )
 
     # Collect all related issues
     issue_keys = extractor.collect_all_related_issues()
@@ -880,22 +962,25 @@ def main():
     extractor.generate_summary(worklogs)
 
     # Create output directory if it doesn't exist
-    from pathlib import Path
-    output_dir = Path('output')
+    output_dir = Path(args.output_dir)
     output_dir.mkdir(exist_ok=True)
 
-    # Export to CSV
+    # Generate filename with timestamp
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    csv_filename = output_dir / f'zyn_worklogs_{timestamp}.csv'
-    extractor.export_to_csv(worklogs, str(csv_filename))
+    base_filename = f'{args.project.lower()}_worklogs_{timestamp}'
 
-    # Export to HTML
-    html_filename = output_dir / f'zyn_worklogs_{timestamp}.html'
-    extractor.export_to_html(worklogs, str(html_filename))
+    # Export based on format selection
+    if args.format in ['csv', 'both']:
+        csv_filename = output_dir / f'{base_filename}.csv'
+        extractor.export_to_csv(worklogs, str(csv_filename))
+        print(f"  - CSV: {csv_filename}")
 
-    print(f"\nDone! Results exported:")
-    print(f"  - CSV: {csv_filename}")
-    print(f"  - HTML Report: {html_filename}")
+    if args.format in ['html', 'both']:
+        html_filename = output_dir / f'{base_filename}.html'
+        extractor.export_to_html(worklogs, str(html_filename))
+        print(f"  - HTML Report: {html_filename}")
+
+    print(f"\nDone! Results exported to {output_dir}")
 
 
 if __name__ == "__main__":

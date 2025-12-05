@@ -9,53 +9,130 @@ This tool extracts worklogs from Jira for the ZYN project, filtered by ERP Activ
 - Finds all issues with specific ERP Activity value using JQL
 - Identifies epics and includes all issues within those epics
 - Includes all issues linked to matched issues
-- Extracts worklogs with detailed information including issue type and epic links
+- Collects all sub-tasks of matched issues
+- Extracts worklogs with detailed information including issue type, epic links, and summary
 - Exports results to CSV and interactive HTML reports
-- Generates summary statistics by author
+- Generates summary statistics by author and issue
 - Bearer token authentication
+- Environment variable configuration support (.env file)
+- Command-line interface with flexible options
+- Visual progress bars with tqdm
 - Configurable log levels (standard/debug)
-- Comprehensive three-stage collection process
+- Comprehensive five-stage collection process
 
 ## Setup
 
 ### 1. Install Requirements
 
 ```bash
-pip install requests
+pip install -r requirements.txt
 ```
+
+This will install:
+- `requests` - HTTP library for Jira API
+- `python-dotenv` - Environment variable management
+- `tqdm` - Progress bar visualization
 
 ### 2. Configure Jira Connection
 
-Update the configuration in `extract_worklogs.py` (lines 15-20):
+There are three ways to configure the tool (in order of precedence):
 
-- **JIRA_URL**: Your Jira instance URL (e.g., `https://yourcompany.atlassian.net`)
-- **JIRA_EMAIL**: Your Jira email address
-- **JIRA_API_TOKEN**: Your Jira API token ([Create one here](https://id.atlassian.com/manage-profile/security/api-tokens))
-- **PROJECT_KEY**: The Jira project key (default: `ZYN`)
-- **ERP_ACTIVITY_FILTER**: The ERP Activity value to filter by (default: `ProjectTask-00000007118797`)
-- **LOG_LEVEL**: 1 for standard output, 2 for debug output with detailed API calls
+#### Option A: Command-Line Arguments (Highest Priority)
+```bash
+python extract_worklogs.py --jira-url https://jira.example.com --jira-token YOUR_TOKEN --project ZYN
+```
+
+#### Option B: Environment Variables (.env file)
+1. Copy `.env.example` to `.env`:
+   ```bash
+   cp .env.example .env
+   ```
+
+2. Edit `.env` and fill in your values:
+   ```env
+   JIRA_URL=https://your-jira-instance.atlassian.net
+   JIRA_EMAIL=your-email@example.com
+   JIRA_API_TOKEN=your-api-token-here
+   PROJECT_KEY=ZYN
+   ERP_ACTIVITY_FILTER=ProjectTask-00000007118797
+   LOG_LEVEL=1
+   ```
+
+3. Get your API token from: [https://id.atlassian.com/manage-profile/security/api-tokens](https://id.atlassian.com/manage-profile/security/api-tokens)
+
+#### Option C: Environment Variables (System-level)
+Set environment variables in your shell:
+```bash
+export JIRA_URL=https://your-jira-instance.atlassian.net
+export JIRA_API_TOKEN=your-token-here
+```
 
 ## Usage
 
+### Basic Usage
+
 ```bash
+# Use configuration from .env file
 python extract_worklogs.py
 ```
 
+### Command-Line Options
+
+```bash
+# Show help
+python extract_worklogs.py --help
+
+# Override project and ERP activity
+python extract_worklogs.py --project ZYN --erp-activity ProjectTask-00000007118797
+
+# Debug mode with detailed API logging
+python extract_worklogs.py --log-level 2
+
+# Custom output directory
+python extract_worklogs.py --output-dir ./reports
+
+# Export only CSV (skip HTML)
+python extract_worklogs.py --format csv
+
+# Export only HTML (skip CSV)
+python extract_worklogs.py --format html
+
+# Show version
+python extract_worklogs.py --version
+```
+
+### Available Arguments
+
+| Argument | Short | Description | Default |
+|----------|-------|-------------|---------|
+| `--project` | `-p` | Project key | From env or `ZYN` |
+| `--erp-activity` | `-e` | ERP Activity filter | From env |
+| `--jira-url` | | Jira instance URL | From env |
+| `--jira-token` | | Jira API token | From env |
+| `--output-dir` | `-o` | Output directory | `./output` |
+| `--log-level` | `-l` | Log level (1=standard, 2=debug) | `1` |
+| `--format` | `-f` | Output format (csv/html/both) | `both` |
+| `--version` | `-v` | Show version | |
+| `--help` | `-h` | Show help message | |
+
 The script will:
-1. Search for issues using the configured ERP Activity filter
+1. Search for issues using the specified ERP Activity filter
 2. Expand epics to include all child issues
 3. Find all linked issues
-4. Extract worklogs from all collected issues
-5. Generate both CSV and HTML reports
+4. Collect all sub-tasks
+5. Extract worklogs from all collected issues
+6. Generate CSV and HTML reports
 
 ## Output
 
 The script generates:
 
-1. **Console Output**: Progress updates and summary statistics
-2. **CSV File** (`zyn_worklogs_<timestamp>.csv`): Detailed worklog entries with columns:
+1. **Console Output**: Progress updates with visual progress bars and summary statistics
+
+2. **CSV File** (`<project>_worklogs_<timestamp>.csv`): Detailed worklog entries with columns:
    - `issue_key`: Jira issue key
-   - `issue_type`: Issue type (Story, Task, Bug, Epic, etc.)
+   - `summary`: Issue summary/title
+   - `issue_type`: Issue type (Story, Task, Bug, Epic, Sub-task, etc.)
    - `epic_link`: Epic this issue belongs to
    - `author`: Name of person who logged time
    - `author_email`: Email of author
@@ -64,12 +141,13 @@ The script generates:
    - `started`: When the work was started
    - `comment`: Worklog comment
 
-3. **HTML Report** (`zyn_worklogs_<timestamp>.html`): Interactive report with:
+3. **HTML Report** (`<project>_worklogs_<timestamp>.html`): Interactive report with:
    - Summary dashboard with total hours, entries, contributors, and issues
-   - Hours by Author with expandable detail views
-   - Hours by Issue with contributor breakdown
-   - Complete worklog entries table with filtering capabilities
+   - Hours by Author with expandable detail views showing individual worklogs
+   - Hours by Issue with summary, type, epic link, and contributor breakdown
+   - Complete worklog entries table with all fields
    - Visual progress bars and percentage distributions
+   - Professional styling with gradient header and responsive design
 
 ### Example Output
 
