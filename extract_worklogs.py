@@ -365,7 +365,7 @@ class JiraWorklogExtractor:
             return cached_data
 
         url = f"{self.jira_url}/rest/api/2/issue/{issue_key}"
-        # Fetch additional fields: components, labels, customfield_10014 (Epic Link), customfield_11440 (Product Item), customfield_10076 (Team)
+        # Fetch additional fields: components, labels, customfield_10014 (Epic Link), customfield_11440 (Product Item), customfield_10076 (Team Name)
         params = {"fields": "issuetype,customfield_10014,summary,components,labels,customfield_11440,customfield_10076"}
 
         response = self.session.get(url, params=params)
@@ -386,10 +386,10 @@ class JiraWorklogExtractor:
         if isinstance(product_item, dict):
             product_item = product_item.get('value', '') or product_item.get('name', '')
 
-        # Extract Team (custom field)
+        # Extract Team Name (custom field - prioritize 'name' property)
         team = fields.get('customfield_10076', '')
         if isinstance(team, dict):
-            team = team.get('value', '') or team.get('name', '')
+            team = team.get('name', '') or team.get('value', '')
 
         metadata = {
             'issue_type': fields.get('issuetype', {}).get('name', 'Unknown'),
