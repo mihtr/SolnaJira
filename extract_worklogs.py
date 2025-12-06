@@ -119,6 +119,9 @@ class JiraWorklogExtractor:
             self.cache_dir.mkdir(exist_ok=True)
             self.logger.debug(f"Cache enabled: {self.cache_dir.absolute()} (TTL: {cache_ttl}s)")
 
+        # Track JQL queries for reporting
+        self.jql_queries = []
+
         # Validate configuration if not skipped
         if not skip_validation:
             self.validate_configuration()
@@ -356,6 +359,10 @@ class JiraWorklogExtractor:
         url = f"{self.jira_url}/rest/api/2/search"
         all_issues = []
         start_at = 0
+
+        # Track JQL query for reporting
+        if jql not in self.jql_queries:
+            self.jql_queries.append(jql)
 
         if fields is None:
             fields = ["summary", "issuetype", "status", "issuelinks"]
@@ -1419,6 +1426,7 @@ class JiraWorklogExtractor:
         <!-- Navigation Menu -->
         <div class="nav-menu">
             <a href="#insights">📊 Insights</a>
+            <a href="#jql-queries">🔍 JQL Queries</a>
             <a href="#year-month">📅 By Year/Month</a>
             <a href="#product-item">📦 By Product Item</a>
             <a href="#component">🧩 By Component</a>
@@ -1571,6 +1579,27 @@ class JiraWorklogExtractor:
             </div>
         </div>
 
+        <div class="section" id="jql-queries">
+            <h2 class="section-title">🔍 JQL Queries Used</h2>
+            <div style="background: #f8f9fa; padding: 20px; border-radius: 8px;">
+                <p style="color: #666; margin-bottom: 15px;">The following JQL queries were executed during data extraction:</p>
+                <div style="display: flex; flex-direction: column; gap: 12px;">
+"""
+
+        # Add each JQL query
+        for i, jql in enumerate(self.jql_queries, 1):
+            html += f"""
+                    <div style="background: white; padding: 15px; border-radius: 6px; border-left: 4px solid #667eea; box-shadow: 0 2px 4px rgba(0,0,0,0.05);">
+                        <div style="font-weight: 600; color: #667eea; margin-bottom: 8px;">Query {i}:</div>
+                        <code style="display: block; background: #f1f3f5; padding: 10px; border-radius: 4px; font-family: 'Courier New', monospace; color: #333; overflow-x: auto; white-space: pre-wrap; word-break: break-all;">{jql}</code>
+                    </div>
+"""
+
+        html += """
+                </div>
+            </div>
+        </div>
+
         <div class="section" id="year-month">
             <h2 class="section-title">Hours by Year and Month</h2>
 
@@ -1620,7 +1649,7 @@ class JiraWorklogExtractor:
         for year_month, stats in year_month_sorted:
             percentage = (stats['hours'] / total_hours * 100) if total_hours > 0 else 0
             html += f"""
-                    <tr>
+                    <tr data-year-month="{year_month}">
                         <td><strong>{year_month}</strong></td>
                         <td>{stats['hours']:.2f}h</td>
                         <td>{stats['entries']}</td>
@@ -2220,6 +2249,14 @@ class JiraWorklogExtractor:
             // Update chart with filtered data
             createYearMonthChart(filteredLabels, filteredHours);
 
+            // Filter table rows
+            const tableRows = document.querySelectorAll('tr[data-year-month]');
+            tableRows.forEach(row => {
+                const yearMonth = row.getAttribute('data-year-month');
+                const inRange = (!fromInput || yearMonth >= fromInput) && (!toInput || yearMonth <= toInput);
+                row.style.display = inRange ? '' : 'none';
+            });
+
             // Show filtered total
             document.getElementById('filteredHours').textContent = totalFiltered.toFixed(2);
             document.getElementById('filteredTotal').style.display = 'block';
@@ -2236,6 +2273,12 @@ class JiraWorklogExtractor:
 
             // Reset chart to original data
             createYearMonthChart(originalYearMonthLabels, originalYearMonthHours);
+
+            // Show all table rows
+            const tableRows = document.querySelectorAll('tr[data-year-month]');
+            tableRows.forEach(row => {
+                row.style.display = '';
+            });
 
             // Hide filtered total
             document.getElementById('filteredTotal').style.display = 'none';

@@ -14,7 +14,18 @@
       "Bash(git commit --amend -m \"$(cat <<''EOF''\nInitial commit: Jira worklog extraction tool\n\n- Extract worklogs from Jira using custom field search\n- Three-stage collection: direct matches, epic expansion, linked issues\n- Bearer token authentication\n- Export to CSV and interactive HTML reports\n- Comprehensive debug logging\n- User prompts for custom field and value\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nEOF\n)\")",
       "Bash(ls:*)",
       "Bash(git commit:*)",
-      "Bash(pip install:*)"
+      "Bash(pip install:*)",
+      "Bash(test:*)",
+      "Bash(flake8:*)",
+      "Bash(gh run:*)",
+      "Bash(grep:*)",
+      "Bash(python3:*)",
+      "Bash(python -c:*)",
+      "Bash(powershell -Command \"(Get-Content extract_worklogs.py -Encoding UTF8) -replace ''✓'', ''[OK]'' -replace ''✗'', ''[X]'' | Set-Content extract_worklogs.py -Encoding UTF8\")",
+      "Bash(pytest:*)",
+      "Bash(cat:*)",
+      "Bash(where:*)",
+      "Bash(C:UsersmihtrAppDataLocalPythonbinpython.exe -m py_compile extract_worklogs.py)"
     ],
     "deny": [],
     "ask": []
