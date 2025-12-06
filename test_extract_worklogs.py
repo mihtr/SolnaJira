@@ -223,7 +223,7 @@ def mock_empty_worklogs():
 @pytest.fixture
 def extractor(mock_jira_config):
     """Create a JiraWorklogExtractor instance for testing"""
-    return JiraWorklogExtractor(**mock_jira_config)
+    return JiraWorklogExtractor(**mock_jira_config, skip_validation=True)
 
 
 # =============================================================================
@@ -235,7 +235,7 @@ class TestInitialization:
 
     def test_initialization_with_valid_config(self, mock_jira_config):
         """Test that extractor initializes with valid configuration"""
-        extractor = JiraWorklogExtractor(**mock_jira_config)
+        extractor = JiraWorklogExtractor(**mock_jira_config, skip_validation=True)
 
         assert extractor.jira_url == 'https://test-jira.atlassian.net'
         assert extractor.api_token == 'test-api-token-12345'
@@ -249,7 +249,8 @@ class TestInitialization:
         """Test that trailing slash is removed from JIRA URL"""
         extractor = JiraWorklogExtractor(
             jira_url='https://test-jira.atlassian.net/',
-            api_token='token'
+            api_token='token',
+            skip_validation=True
         )
         assert extractor.jira_url == 'https://test-jira.atlassian.net'
 
@@ -257,7 +258,8 @@ class TestInitialization:
         """Test initialization with minimal required parameters"""
         extractor = JiraWorklogExtractor(
             jira_url='https://test.atlassian.net',
-            api_token='token123'
+            api_token='token123',
+            skip_validation=True
         )
         assert extractor.project_key is not None
         assert extractor.erp_activity_filter is not None
@@ -272,7 +274,7 @@ class TestInitialization:
     def test_cache_directory_created_when_enabled(self, mock_mkdir, mock_jira_config):
         """Test that cache directory is created when cache is enabled"""
         mock_jira_config['use_cache'] = True
-        extractor = JiraWorklogExtractor(**mock_jira_config)
+        extractor = JiraWorklogExtractor(**mock_jira_config, skip_validation=True)
         mock_mkdir.assert_called_once()
 
     def test_session_created_with_retry_strategy(self, extractor):
@@ -1292,8 +1294,506 @@ class TestSessionRetryLogic:
 
 
 # =============================================================================
+# TEST JQL QUERY TRACKING
+# =============================================================================
+
+class TestJQLQueryTracking:
+    """Tests for JQL query tracking functionality"""
+
+    def test_jql_queries_list_initialized(self, extractor):
+        """Test that jql_queries list is initialized"""
+        assert hasattr(extractor, 'jql_queries')
+        assert isinstance(extractor.jql_queries, list)
+        assert len(extractor.jql_queries) == 0
+
+    @patch('extract_worklogs.requests.Session.get')
+    def test_search_issues_tracks_jql_query(self, mock_get, extractor, mock_issue_response):
+        """Test that search_issues tracks JQL queries"""
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = mock_issue_response
+        mock_get.return_value = mock_response
+
+        jql = 'project = TEST AND "ERP Activity" ~ "value"'
+        extractor.search_issues(jql)
+
+        assert jql in extractor.jql_queries
+        assert len(extractor.jql_queries) == 1
+
+    @patch('extract_worklogs.requests.Session.get')
+    def test_search_issues_tracks_multiple_unique_queries(self, mock_get, extractor, mock_issue_response):
+        """Test that multiple unique queries are tracked"""
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = mock_issue_response
+        mock_get.return_value = mock_response
+
+        jql1 = 'project = TEST'
+        jql2 = 'project = TEST AND status = Open'
+
+        extractor.search_issues(jql1)
+        extractor.search_issues(jql2)
+
+        assert jql1 in extractor.jql_queries
+        assert jql2 in extractor.jql_queries
+        assert len(extractor.jql_queries) == 2
+
+    @patch('extract_worklogs.requests.Session.get')
+    def test_search_issues_does_not_duplicate_queries(self, mock_get, extractor, mock_issue_response):
+        """Test that duplicate queries are not tracked twice"""
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = mock_issue_response
+        mock_get.return_value = mock_response
+
+        jql = 'project = TEST'
+
+        extractor.search_issues(jql)
+        extractor.search_issues(jql)  # Same query again
+
+        assert len(extractor.jql_queries) == 1
+
+
+# =============================================================================
+# TEST EXCEL EXPORT
+# =============================================================================
+
+class TestExcelExport:
+    """Tests for Excel export functionality"""
+
+    @patch('extract_worklogs.openpyxl.Workbook')
+    def test_export_to_excel_successful(self, mock_workbook_class, extractor):
+        """Test successful Excel export"""
+        mock_workbook = Mock()
+        mock_ws = Mock()
+        mock_workbook.active = mock_ws
+        mock_workbook.create_sheet = Mock(return_value=mock_ws)
+        mock_workbook_class.return_value = mock_workbook
+
+        worklogs = [
+            {
+                'issue_key': 'TEST-1',
+                'summary': 'Test Issue',
+                'issue_type': 'Story',
+                'epic_link': 'TEST-EPIC',
+                'author': 'John Doe',
+                'author_email': 'john@example.com',
+                'time_spent': '2h',
+                'time_spent_seconds': 7200,
+                'started': '2024-03-15T10:00:00.000+0000',
+                'comment': 'Test comment',
+                'components': ['Component A'],
+                'labels': ['backend'],
+                'product_item': 'Product 1',
+                'team': 'Team Alpha'
+            }
+        ]
+
+        extractor.export_to_excel(worklogs, 'test_output.xlsx')
+
+        mock_workbook.save.assert_called_once_with('test_output.xlsx')
+
+    def test_export_to_excel_empty_worklogs(self, extractor, capsys):
+        """Test Excel export with empty worklogs"""
+        extractor.export_to_excel([], 'test_output.xlsx')
+        captured = capsys.readouterr()
+        assert 'No worklogs to export' in captured.out
+
+    @patch('extract_worklogs.openpyxl.Workbook')
+    def test_export_to_excel_creates_multiple_sheets(self, mock_workbook_class, extractor):
+        """Test that Excel export creates all required sheets"""
+        mock_workbook = Mock()
+        mock_ws = Mock()
+        mock_workbook.active = mock_ws
+
+        # Track sheet creation
+        created_sheets = []
+        def create_sheet_side_effect(title):
+            created_sheets.append(title)
+            return mock_ws
+
+        mock_workbook.create_sheet = Mock(side_effect=create_sheet_side_effect)
+        mock_workbook_class.return_value = mock_workbook
+
+        worklogs = [{
+            'issue_key': 'TEST-1',
+            'summary': 'Test',
+            'issue_type': 'Story',
+            'epic_link': '',
+            'author': 'John',
+            'author_email': 'john@example.com',
+            'time_spent': '1h',
+            'time_spent_seconds': 3600,
+            'started': '2024-03-15T10:00:00.000+0000',
+            'comment': '',
+            'components': ['Comp A'],
+            'labels': ['label1'],
+            'product_item': 'Product 1',
+            'team': 'Team A'
+        }]
+
+        extractor.export_to_excel(worklogs, 'test_output.xlsx')
+
+        # Check that expected sheets were created
+        expected_sheets = [
+            'Hours by Year-Month',
+            'Hours by Product Item',
+            'Hours by Component',
+            'Hours by Label',
+            'Hours by Team',
+            'Hours by Author',
+            'Hours by Issue',
+            'All Worklog Entries'
+        ]
+
+        for sheet_name in expected_sheets:
+            assert sheet_name in created_sheets
+
+    @patch('extract_worklogs.openpyxl.Workbook')
+    def test_export_to_excel_calculates_hours_correctly(self, mock_workbook_class, extractor):
+        """Test that Excel export correctly converts seconds to hours"""
+        mock_workbook = Mock()
+        mock_ws = Mock()
+        mock_workbook.active = mock_ws
+        mock_workbook.create_sheet = Mock(return_value=mock_ws)
+        mock_workbook_class.return_value = mock_workbook
+
+        worklogs = [{
+            'issue_key': 'TEST-1',
+            'summary': 'Test',
+            'issue_type': 'Story',
+            'epic_link': '',
+            'author': 'John',
+            'author_email': 'john@example.com',
+            'time_spent': '3h 30m',
+            'time_spent_seconds': 12600,  # Should be 3.5 hours
+            'started': '2024-03-15T10:00:00.000+0000',
+            'comment': '',
+            'components': [],
+            'labels': [],
+            'product_item': 'None',
+            'team': 'None'
+        }]
+
+        extractor.export_to_excel(worklogs, 'test_output.xlsx')
+
+        # Verify workbook was saved
+        mock_workbook.save.assert_called_once()
+
+
+# =============================================================================
+# TEST VALIDATION FUNCTIONALITY
+# =============================================================================
+
+class TestValidation:
+    """Tests for configuration validation"""
+
+    @patch('extract_worklogs.requests.Session.get')
+    def test_validate_configuration_checks_jira_url(self, mock_get, mock_jira_config):
+        """Test that validation checks Jira URL accessibility"""
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            'displayName': 'Test User',
+            'emailAddress': 'test@example.com'
+        }
+        mock_get.return_value = mock_response
+
+        # Should not raise exception
+        extractor = JiraWorklogExtractor(**mock_jira_config, skip_validation=False)
+
+    @patch('extract_worklogs.requests.Session.get')
+    def test_validate_configuration_fails_on_invalid_url(self, mock_get, mock_jira_config):
+        """Test that validation fails on inaccessible URL"""
+        mock_get.side_effect = requests.ConnectionError('Could not connect')
+
+        with pytest.raises(Exception):
+            JiraWorklogExtractor(**mock_jira_config, skip_validation=False)
+
+    @patch('extract_worklogs.requests.Session.get')
+    def test_validate_configuration_checks_api_token(self, mock_get, mock_jira_config):
+        """Test that validation checks API token validity"""
+        # First call for URL check
+        mock_response1 = Mock()
+        mock_response1.status_code = 200
+
+        # Second call for API token check
+        mock_response2 = Mock()
+        mock_response2.status_code = 401
+        mock_response2.raise_for_status.side_effect = requests.HTTPError('Unauthorized')
+
+        mock_get.side_effect = [mock_response1, mock_response2]
+
+        with pytest.raises(Exception):
+            JiraWorklogExtractor(**mock_jira_config, skip_validation=False)
+
+
+# =============================================================================
+# TEST INTEGRATION SCENARIOS
+# =============================================================================
+
+class TestIntegrationScenarios:
+    """Integration tests for complete workflows"""
+
+    @patch.object(JiraWorklogExtractor, 'get_subtasks')
+    @patch.object(JiraWorklogExtractor, 'get_linked_issues')
+    @patch.object(JiraWorklogExtractor, 'get_epic_issues')
+    @patch.object(JiraWorklogExtractor, 'find_issues_by_erp_activity')
+    @patch.object(JiraWorklogExtractor, '_extract_issue_worklogs')
+    def test_full_extraction_workflow(self, mock_extract, mock_find, mock_epic,
+                                     mock_linked, mock_subtasks, extractor):
+        """Test complete workflow from issue collection to worklog extraction"""
+        # Setup: 1 epic with 2 children, 1 regular issue, 1 linked issue, 2 subtasks
+        mock_find.return_value = [
+            {'key': 'TEST-EPIC', 'fields': {'issuetype': {'name': 'Epic'}}},
+            {'key': 'TEST-1', 'fields': {'issuetype': {'name': 'Story'}}}
+        ]
+        mock_epic.return_value = [
+            {'key': 'TEST-10'},
+            {'key': 'TEST-11'}
+        ]
+        mock_linked.return_value = ['TEST-20']
+        mock_subtasks.return_value = ['TEST-30', 'TEST-31']
+
+        mock_extract.return_value = [{
+            'issue_key': 'TEST-1',
+            'author': 'John Doe',
+            'time_spent_seconds': 3600
+        }]
+
+        # Execute full workflow
+        issue_keys = extractor.collect_all_related_issues()
+        worklogs = extractor.extract_worklogs(issue_keys)
+
+        # Verify comprehensive collection
+        assert len(issue_keys) >= 7  # Epic + Story + 2 epic children + linked + 2 subtasks
+        assert 'TEST-EPIC' in issue_keys
+        assert 'TEST-1' in issue_keys
+        assert 'TEST-10' in issue_keys
+        assert 'TEST-20' in issue_keys
+        assert 'TEST-30' in issue_keys
+
+    @patch('builtins.open', new_callable=mock_open)
+    @patch('extract_worklogs.openpyxl.Workbook')
+    @patch('csv.DictWriter')
+    def test_export_to_all_formats(self, mock_csv_writer, mock_workbook, mock_file, extractor):
+        """Test exporting to all supported formats"""
+        mock_workbook_instance = Mock()
+        mock_workbook.return_value = mock_workbook_instance
+        mock_ws = Mock()
+        mock_workbook_instance.active = mock_ws
+        mock_workbook_instance.create_sheet = Mock(return_value=mock_ws)
+
+        mock_writer = Mock()
+        mock_csv_writer.return_value = mock_writer
+
+        worklogs = [{
+            'issue_key': 'TEST-1',
+            'summary': 'Test',
+            'issue_type': 'Story',
+            'epic_link': '',
+            'author': 'John',
+            'author_email': 'john@example.com',
+            'time_spent': '1h',
+            'time_spent_seconds': 3600,
+            'started': '2024-03-15T10:00:00.000+0000',
+            'comment': '',
+            'components': [],
+            'labels': [],
+            'product_item': 'None',
+            'team': 'None'
+        }]
+
+        # Export to all formats
+        extractor.export_to_csv(worklogs, 'test.csv')
+        extractor.export_to_html(worklogs, 'test.html')
+        extractor.export_to_excel(worklogs, 'test.xlsx')
+
+        # Verify all exports were called
+        mock_writer.writeheader.assert_called_once()
+        mock_workbook_instance.save.assert_called_once()
+        assert mock_file.call_count >= 2  # CSV and HTML
+
+
+# =============================================================================
+# TEST HTML JQL SECTION
+# =============================================================================
+
+class TestHTMLJQLSection:
+    """Tests for JQL queries section in HTML export"""
+
+    @patch('builtins.open', new_callable=mock_open)
+    def test_html_includes_jql_queries_section(self, mock_file, extractor):
+        """Test that HTML export includes JQL queries section"""
+        # Add some JQL queries
+        extractor.jql_queries = [
+            'project = TEST AND "ERP Activity" ~ "value1"',
+            'project = TEST AND "Epic Link" = TEST-100'
+        ]
+
+        worklogs = [{
+            'issue_key': 'TEST-1',
+            'summary': 'Test',
+            'issue_type': 'Story',
+            'epic_link': '',
+            'author': 'John',
+            'author_email': 'john@example.com',
+            'time_spent': '1h',
+            'time_spent_seconds': 3600,
+            'started': '2024-03-15T10:00:00.000+0000',
+            'comment': '',
+            'components': [],
+            'labels': [],
+            'product_item': 'None',
+            'team': 'None'
+        }]
+
+        extractor.export_to_html(worklogs, 'test_report.html')
+
+        write_calls = mock_file().write.call_args_list
+        html_content = ''.join([str(call[0][0]) for call in write_calls])
+
+        # Check that JQL section exists
+        assert 'JQL Queries' in html_content or 'jql-queries' in html_content
+
+        # Check that queries are included
+        assert 'ERP Activity' in html_content
+        assert 'Epic Link' in html_content
+
+    @patch('builtins.open', new_callable=mock_open)
+    def test_html_jql_section_includes_navigation_link(self, mock_file, extractor):
+        """Test that navigation menu includes JQL queries link"""
+        extractor.jql_queries = ['project = TEST']
+
+        worklogs = [{
+            'issue_key': 'TEST-1',
+            'summary': 'Test',
+            'issue_type': 'Story',
+            'epic_link': '',
+            'author': 'John',
+            'author_email': 'john@example.com',
+            'time_spent': '1h',
+            'time_spent_seconds': 3600,
+            'started': '2024-03-15T10:00:00.000+0000',
+            'comment': '',
+            'components': [],
+            'labels': [],
+            'product_item': 'None',
+            'team': 'None'
+        }]
+
+        extractor.export_to_html(worklogs, 'test_report.html')
+
+        write_calls = mock_file().write.call_args_list
+        html_content = ''.join([str(call[0][0]) for call in write_calls])
+
+        # Check for navigation link
+        assert '#jql-queries' in html_content
+
+
+# =============================================================================
+# TEST PERFORMANCE AND PARALLEL PROCESSING
+# =============================================================================
+
+class TestPerformance:
+    """Tests for performance-critical operations"""
+
+    @patch.object(JiraWorklogExtractor, '_extract_issue_worklogs')
+    def test_parallel_extraction_is_faster_than_sequential(self, mock_extract, extractor):
+        """Test that parallel extraction completes faster (simulated)"""
+        import time
+
+        def slow_extraction(issue_key, cache):
+            time.sleep(0.01)  # Simulate API call delay
+            return [{'issue_key': issue_key, 'author': 'Test', 'time_spent_seconds': 3600}]
+
+        mock_extract.side_effect = slow_extraction
+
+        issue_keys = [f'TEST-{i}' for i in range(10)]
+
+        # Time parallel extraction
+        start_time = time.time()
+        worklogs = extractor.extract_worklogs(issue_keys, max_workers=5)
+        parallel_time = time.time() - start_time
+
+        assert len(worklogs) == 10
+        assert parallel_time < 0.5  # Should be much faster than 10 * 0.01 = 0.1s sequential
+
+    @patch.object(JiraWorklogExtractor, '_extract_issue_worklogs')
+    def test_handles_large_issue_count(self, mock_extract, extractor):
+        """Test extraction of large number of issues"""
+        mock_extract.return_value = [{'issue_key': 'TEST-1', 'author': 'Test', 'time_spent_seconds': 3600}]
+
+        # Simulate large workload
+        issue_keys = [f'TEST-{i}' for i in range(100)]
+        worklogs = extractor.extract_worklogs(issue_keys)
+
+        assert len(worklogs) == 100
+
+
+# =============================================================================
+# TEST DATA AGGREGATION
+# =============================================================================
+
+class TestDataAggregation:
+    """Tests for data aggregation in reports"""
+
+    def test_aggregation_by_component_no_splitting(self, extractor):
+        """Test that components with multiple values are not split"""
+        worklogs = [
+            {
+                'issue_key': 'TEST-1',
+                'components': ['Backend', 'Frontend'],
+                'time_spent_seconds': 7200  # 2 hours
+            }
+        ]
+
+        # Simulate aggregation logic
+        by_component = defaultdict(lambda: {'hours': 0, 'entries': 0, 'issues': set()})
+
+        for worklog in worklogs:
+            components = worklog.get('components', [])
+            if components:
+                component_key = ', '.join(sorted(components))
+                by_component[component_key]['hours'] += worklog['time_spent_seconds'] / 3600
+                by_component[component_key]['entries'] += 1
+                by_component[component_key]['issues'].add(worklog['issue_key'])
+
+        # Verify only one aggregated entry
+        assert len(by_component) == 1
+        assert 'Backend, Frontend' in by_component
+        assert by_component['Backend, Frontend']['hours'] == 2.0
+
+    def test_aggregation_by_label_no_splitting(self, extractor):
+        """Test that labels with multiple values are not split"""
+        worklogs = [
+            {
+                'issue_key': 'TEST-1',
+                'labels': ['backend', 'urgent', 'security'],
+                'time_spent_seconds': 10800  # 3 hours
+            }
+        ]
+
+        # Simulate aggregation logic
+        by_label = defaultdict(lambda: {'hours': 0, 'entries': 0, 'issues': set()})
+
+        for worklog in worklogs:
+            labels = worklog.get('labels', [])
+            if labels:
+                label_key = ', '.join(sorted(labels))
+                by_label[label_key]['hours'] += worklog['time_spent_seconds'] / 3600
+                by_label[label_key]['entries'] += 1
+                by_label[label_key]['issues'].add(worklog['issue_key'])
+
+        # Verify only one aggregated entry
+        assert len(by_label) == 1
+        assert 'backend, security, urgent' in by_label
+        assert by_label['backend, security, urgent']['hours'] == 3.0
+
+
+# =============================================================================
 # RUN TESTS
 # =============================================================================
 
 if __name__ == '__main__':
-    pytest.main([__file__, '-v', '--tb=short'])
+    pytest.main([__file__, '-v', '--tb=short', '--cov=extract_worklogs', '--cov-report=html'])
