@@ -730,17 +730,25 @@ class JiraWorklogExtractor:
             return
 
         with open(filename, 'w', newline='', encoding='utf-8') as csvfile:
-            fieldnames = ['issue_key', 'summary', 'issue_type', 'epic_link', 'author', 'author_email', 'time_spent',
+            fieldnames = ['issue_key', 'summary', 'issue_type', 'epic_link', 'product_item', 'team', 'components', 'labels', 'author', 'author_email', 'time_spent',
                          'time_spent_hours', 'started', 'comment']
             writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
 
             writer.writeheader()
             for worklog in worklogs:
+                # Format components and labels as comma-separated strings
+                components = ', '.join(worklog.get('components', [])) if worklog.get('components') else ''
+                labels = ', '.join(worklog.get('labels', [])) if worklog.get('labels') else ''
+
                 writer.writerow({
                     'issue_key': worklog['issue_key'],
                     'summary': worklog['summary'],
                     'issue_type': worklog['issue_type'],
                     'epic_link': worklog['epic_link'],
+                    'product_item': worklog.get('product_item', 'None'),
+                    'team': worklog.get('team', 'None'),
+                    'components': components,
+                    'labels': labels,
                     'author': worklog['author'],
                     'author_email': worklog['author_email'],
                     'time_spent': worklog['time_spent'],
