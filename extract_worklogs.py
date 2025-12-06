@@ -27,7 +27,7 @@ from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
 from openpyxl.utils import get_column_letter
 
 # Version
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 
 # Load environment variables from .env file
 load_dotenv()

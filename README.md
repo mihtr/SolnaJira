@@ -2,7 +2,7 @@
 
 ![Tests](https://github.com/mihtr/SolnaJira/workflows/Tests/badge.svg)
 
-**Version: 1.0.0**
+**Version: 1.1.0**
 
 This tool extracts worklogs from Jira for the ZYN project, filtered by ERP Activity. It includes all issues linked to epics that match the filter criteria.
 
