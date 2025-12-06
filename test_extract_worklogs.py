@@ -1361,11 +1361,34 @@ class TestJQLQueryTracking:
 class TestExcelExport:
     """Tests for Excel export functionality"""
 
+    def _create_mock_worksheet(self):
+        """Create a properly mocked worksheet with columns support"""
+        mock_ws = Mock()
+
+        # Mock cells for columns
+        mock_cell1 = Mock()
+        mock_cell1.value = 'Header1'
+        mock_cell1.column = 1
+
+        mock_cell2 = Mock()
+        mock_cell2.value = 'Header2'
+        mock_cell2.column = 2
+
+        # Mock columns as iterable
+        mock_ws.columns = [[mock_cell1], [mock_cell2]]
+
+        # Mock column_dimensions as a defaultdict that returns mocks
+        column_dim_mock = defaultdict(Mock)
+        mock_ws.column_dimensions = column_dim_mock
+
+        return mock_ws
+
+    @patch('extract_worklogs.get_column_letter', return_value='A')
     @patch('extract_worklogs.openpyxl.Workbook')
-    def test_export_to_excel_successful(self, mock_workbook_class, extractor):
+    def test_export_to_excel_successful(self, mock_workbook_class, mock_get_col_letter, extractor):
         """Test successful Excel export"""
         mock_workbook = Mock()
-        mock_ws = Mock()
+        mock_ws = self._create_mock_worksheet()
         mock_workbook.active = mock_ws
         mock_workbook.create_sheet = Mock(return_value=mock_ws)
         mock_workbook_class.return_value = mock_workbook
@@ -1399,18 +1422,19 @@ class TestExcelExport:
         captured = capsys.readouterr()
         assert 'No worklogs to export' in captured.out
 
+    @patch('extract_worklogs.get_column_letter', return_value='A')
     @patch('extract_worklogs.openpyxl.Workbook')
-    def test_export_to_excel_creates_multiple_sheets(self, mock_workbook_class, extractor):
+    def test_export_to_excel_creates_multiple_sheets(self, mock_workbook_class, mock_get_col_letter, extractor):
         """Test that Excel export creates all required sheets"""
         mock_workbook = Mock()
-        mock_ws = Mock()
+        mock_ws = self._create_mock_worksheet()
         mock_workbook.active = mock_ws
 
         # Track sheet creation
         created_sheets = []
         def create_sheet_side_effect(title):
             created_sheets.append(title)
-            return mock_ws
+            return self._create_mock_worksheet()
 
         mock_workbook.create_sheet = Mock(side_effect=create_sheet_side_effect)
         mock_workbook_class.return_value = mock_workbook
@@ -1449,11 +1473,12 @@ class TestExcelExport:
         for sheet_name in expected_sheets:
             assert sheet_name in created_sheets
 
+    @patch('extract_worklogs.get_column_letter', return_value='A')
     @patch('extract_worklogs.openpyxl.Workbook')
-    def test_export_to_excel_calculates_hours_correctly(self, mock_workbook_class, extractor):
+    def test_export_to_excel_calculates_hours_correctly(self, mock_workbook_class, mock_get_col_letter, extractor):
         """Test that Excel export correctly converts seconds to hours"""
         mock_workbook = Mock()
-        mock_ws = Mock()
+        mock_ws = self._create_mock_worksheet()
         mock_workbook.active = mock_ws
         mock_workbook.create_sheet = Mock(return_value=mock_ws)
         mock_workbook_class.return_value = mock_workbook
@@ -1573,14 +1598,26 @@ class TestIntegrationScenarios:
         assert 'TEST-20' in issue_keys
         assert 'TEST-30' in issue_keys
 
+    def _create_mock_worksheet_for_integration(self):
+        """Helper to create mock worksheet for integration tests"""
+        mock_ws = Mock()
+        mock_cell = Mock()
+        mock_cell.value = 'Header'
+        mock_cell.column = 1
+        mock_ws.columns = [[mock_cell]]
+        column_dim_mock = defaultdict(Mock)
+        mock_ws.column_dimensions = column_dim_mock
+        return mock_ws
+
+    @patch('extract_worklogs.get_column_letter', return_value='A')
     @patch('builtins.open', new_callable=mock_open)
     @patch('extract_worklogs.openpyxl.Workbook')
     @patch('csv.DictWriter')
-    def test_export_to_all_formats(self, mock_csv_writer, mock_workbook, mock_file, extractor):
+    def test_export_to_all_formats(self, mock_csv_writer, mock_workbook, mock_file, mock_get_col_letter, extractor):
         """Test exporting to all supported formats"""
         mock_workbook_instance = Mock()
         mock_workbook.return_value = mock_workbook_instance
-        mock_ws = Mock()
+        mock_ws = self._create_mock_worksheet_for_integration()
         mock_workbook_instance.active = mock_ws
         mock_workbook_instance.create_sheet = Mock(return_value=mock_ws)
 
