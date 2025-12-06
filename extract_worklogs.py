@@ -2942,9 +2942,8 @@ def main():
     output_dir = Path(args.output_dir)
     output_dir.mkdir(exist_ok=True)
 
-    # Generate filename with timestamp
-    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    base_filename = f'{args.project.lower()}_worklogs_{timestamp}'
+    # Generate filename without timestamp (will overwrite existing files)
+    base_filename = f'{args.project.lower()}_worklogs'
 
     # Export based on format selection
     print("\nExporting results...")
