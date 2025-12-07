@@ -629,18 +629,30 @@ class JiraWorklogExtractor:
         if epic_link:
             try:
                 epic_url = f"{self.jira_url}/rest/api/2/issue/{epic_link}"
-                epic_params = {"fields": "summary,parent"}
+                # Fetch epic summary and customfield_11101 (Parent Link)
+                epic_params = {"fields": "summary,customfield_11101"}
                 epic_response = self.session.get(epic_url, params=epic_params)
                 epic_response.raise_for_status()
                 epic_data = epic_response.json()
                 epic_fields = epic_data.get('fields', {})
                 epic_name = epic_fields.get('summary', '')
 
-                # Get parent link from epic if it exists
-                parent_obj = epic_fields.get('parent', {})
-                if parent_obj:
-                    parent_link = parent_obj.get('key', '')
-                    parent_name = parent_obj.get('fields', {}).get('summary', '')
+                # Get parent link from customfield_11101
+                parent_link = epic_fields.get('customfield_11101', '')
+
+                # If parent link exists, fetch its summary
+                if parent_link:
+                    try:
+                        parent_url = f"{self.jira_url}/rest/api/2/issue/{parent_link}"
+                        parent_params = {"fields": "summary"}
+                        parent_response = self.session.get(parent_url, params=parent_params)
+                        parent_response.raise_for_status()
+                        parent_data = parent_response.json()
+                        parent_name = parent_data.get('fields', {}).get('summary', '')
+                    except Exception as pe:
+                        if self.log_level >= 2:
+                            print(f"  [DEBUG] Could not fetch parent name for {parent_link}: {pe}")
+                        parent_name = ''
             except Exception as e:
                 if self.log_level >= 2:
                     print(f"  [DEBUG] Could not fetch epic details for {epic_link}: {e}")
