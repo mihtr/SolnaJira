@@ -2,20 +2,56 @@
 
 ![Tests](https://github.com/mihtr/SolnaJira/workflows/Tests/badge.svg)
 
-**Version: 1.1.0**
+**Version: 1.2.0**
 
-This tool extracts worklogs from Jira for the ZYN project, filtered by ERP Activity. It includes all issues linked to epics that match the filter criteria.
+This tool extracts worklogs from Jira for the ZYN project, filtered by ERP Activity. It includes all issues linked to epics that match the filter criteria, with advanced analytics and interactive visualizations.
 
 ## Features
 
+### Data Collection
 - Finds all issues with specific ERP Activity value using JQL
 - Identifies epics and includes all issues within those epics
 - Includes all issues linked to matched issues
 - Collects all sub-tasks of matched issues
-- Extracts worklogs with detailed information including issue type, epic links, and summary
-- Exports results to CSV and interactive HTML reports
-- Generates summary statistics by author and issue
+- Fetches enhanced metadata: epic names, parent links, teams, components, labels, product items
 - Bearer token authentication
+- Parallel processing for fast extraction
+- Intelligent caching with TTL
+
+### Analytics & Insights
+- **Smart Insights Engine**: 8 AI-powered pattern detection algorithms
+  - Top contributor analysis
+  - Workload balance (Gini coefficient)
+  - Team focus analysis
+  - Bottleneck detection (2x+ average time)
+  - Component concentration
+  - Outlier detection (Z-score)
+  - Activity concentration
+  - Product diversity analysis
+- Summary statistics by author, issue, team, component, label, and product item
+
+### Visualizations
+- **5 Interactive Chart.js Charts**:
+  - Team distribution pie chart
+  - Top 10 contributors horizontal bar chart
+  - Hours by component bar chart
+  - Hours by product item bar chart
+  - Time series line chart (hours over time)
+- Visual progress bars and percentage distributions
+- Color-coded insight cards (critical/warning/info/success)
+
+### Reports
+- **CSV Export**: Structured data with all metadata fields
+- **Interactive HTML Reports**:
+  - Epic names displayed instead of keys (e.g., "SelfService backend for Zynergy (Invoice)")
+  - Parent link tracking for epics
+  - Sortable and filterable tables with column-specific filters
+  - Compact table styling for better information density
+  - Navigation shortcuts to all sections
+  - Expandable author details
+  - Hours vs estimate analysis
+
+### Configuration
 - Environment variable configuration support (.env file)
 - Command-line interface with flexible options
 - Visual progress bars with tqdm

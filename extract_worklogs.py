@@ -27,7 +27,7 @@ from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
 from openpyxl.utils import get_column_letter
 
 # Version
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 
 # Load environment variables from .env file
 load_dotenv()
@@ -154,7 +154,7 @@ class JiraWorklogExtractor:
         1. Jira URL is reachable
         2. API token is valid (authentication works)
         3. Project exists
-        4. Custom fields exist (customfield_10014, customfield_11440, customfield_10076)
+        4. Custom fields exist (customfield_10101, customfield_10014, customfield_10502, customfield_11440, customfield_10216, customfield_10076)
         5. ERP Activity filter field exists
 
         Raises:
@@ -218,9 +218,12 @@ class JiraWorklogExtractor:
         # 4. Test that custom fields exist
         print("\n[4/5] Verifying custom fields exist...")
         custom_fields = {
-            'customfield_10014': 'Epic Link',
-            'customfield_11440': 'Product Item',
-            'customfield_10076': 'Team Name'
+            'customfield_10101': 'Epic Link',
+            'customfield_10014': 'Epic Link (Alt)',
+            'customfield_10502': 'Product Item',
+            'customfield_11440': 'Product Item (Alt)',
+            'customfield_10216': 'Team Name',
+            'customfield_10076': 'Team Name (Alt)'
         }
 
         try:
@@ -595,8 +598,8 @@ class JiraWorklogExtractor:
             return cached_data
 
         url = f"{self.jira_url}/rest/api/2/issue/{issue_key}"
-        # Fetch additional fields: components, labels, customfield_10014 (Epic Link), customfield_11440 (Product Item), customfield_10076 (Team Name)
-        params = {"fields": "issuetype,customfield_10014,summary,components,labels,customfield_11440,customfield_10076"}
+        # Fetch additional fields: components, labels, customfield_10101 (Epic Link), customfield_10502/customfield_11440 (Product Item), customfield_10216 (Team Name)
+        params = {"fields": "issuetype,customfield_10101,customfield_10014,summary,components,labels,customfield_10502,customfield_11440,customfield_10216,customfield_10076"}
 
         response = self.session.get(url, params=params)
         response.raise_for_status()
@@ -611,19 +614,51 @@ class JiraWorklogExtractor:
         # Extract labels (array of strings)
         labels = fields.get('labels', [])
 
-        # Extract Product Item (custom field)
-        product_item = fields.get('customfield_11440', '')
+        # Extract Product Item (try both customfield_10502 and customfield_11440)
+        product_item = fields.get('customfield_10502', '') or fields.get('customfield_11440', '')
         if isinstance(product_item, dict):
             product_item = product_item.get('value', '') or product_item.get('name', '')
 
-        # Extract Team Name (custom field - prioritize 'name' property)
-        team = fields.get('customfield_10076', '')
+        # Extract Epic Link (try both customfield_10101 and customfield_10014)
+        epic_link = fields.get('customfield_10101', '') or fields.get('customfield_10014', '')
+
+        # Fetch Epic Name and Parent Link if epic link exists
+        epic_name = ''
+        parent_link = ''
+        parent_name = ''
+        if epic_link:
+            try:
+                epic_url = f"{self.jira_url}/rest/api/2/issue/{epic_link}"
+                epic_params = {"fields": "summary,parent"}
+                epic_response = self.session.get(epic_url, params=epic_params)
+                epic_response.raise_for_status()
+                epic_data = epic_response.json()
+                epic_fields = epic_data.get('fields', {})
+                epic_name = epic_fields.get('summary', '')
+
+                # Get parent link from epic if it exists
+                parent_obj = epic_fields.get('parent', {})
+                if parent_obj:
+                    parent_link = parent_obj.get('key', '')
+                    parent_name = parent_obj.get('fields', {}).get('summary', '')
+            except Exception as e:
+                if self.log_level >= 2:
+                    print(f"  [DEBUG] Could not fetch epic details for {epic_link}: {e}")
+                epic_name = ''
+                parent_link = ''
+                parent_name = ''
+
+        # Extract Team Name (try both customfield_10216 and customfield_10076)
+        team = fields.get('customfield_10216', '') or fields.get('customfield_10076', '')
         if isinstance(team, dict):
-            team = team.get('name', '') or team.get('value', '')
+            team = team.get('value', '') or team.get('name', '')
 
         metadata = {
             'issue_type': fields.get('issuetype', {}).get('name', 'Unknown'),
-            'epic_link': fields.get('customfield_10014', ''),
+            'epic_link': epic_link,
+            'epic_name': epic_name,
+            'parent_link': parent_link,
+            'parent_name': parent_name,
             'summary': fields.get('summary', ''),
             'components': component_names,
             'labels': labels,
@@ -673,6 +708,9 @@ class JiraWorklogExtractor:
                     'issue_key': issue_key,
                     'issue_type': metadata['issue_type'],
                     'epic_link': metadata['epic_link'],
+                    'epic_name': metadata.get('epic_name', ''),
+                    'parent_link': metadata.get('parent_link', ''),
+                    'parent_name': metadata.get('parent_name', ''),
                     'summary': metadata['summary'],
                     'components': metadata.get('components', []),
                     'labels': metadata.get('labels', []),
@@ -1051,7 +1089,7 @@ class JiraWorklogExtractor:
 
         # Calculate summary statistics
         by_author = defaultdict(lambda: {'hours': 0, 'entries': 0, 'worklogs': []})
-        by_issue = defaultdict(lambda: {'hours': 0, 'entries': 0, 'authors': set(), 'issue_type': '', 'epic_link': '', 'summary': ''})
+        by_issue = defaultdict(lambda: {'hours': 0, 'entries': 0, 'authors': set(), 'issue_type': '', 'epic_link': '', 'epic_name': '', 'parent_link': '', 'parent_name': '', 'summary': ''})
         by_year_month = defaultdict(lambda: {'hours': 0, 'entries': 0})
         by_product_item = defaultdict(lambda: {'hours': 0, 'entries': 0, 'issues': set()})
         by_component = defaultdict(lambda: {'hours': 0, 'entries': 0, 'issues': set()})
@@ -1073,6 +1111,9 @@ class JiraWorklogExtractor:
             by_issue[issue_key]['authors'].add(author)
             by_issue[issue_key]['issue_type'] = worklog['issue_type']
             by_issue[issue_key]['epic_link'] = worklog['epic_link']
+            by_issue[issue_key]['epic_name'] = worklog.get('epic_name', '')
+            by_issue[issue_key]['parent_link'] = worklog.get('parent_link', '')
+            by_issue[issue_key]['parent_name'] = worklog.get('parent_name', '')
             by_issue[issue_key]['summary'] = worklog['summary']
             by_issue[issue_key]['components'] = worklog.get('components', [])
             by_issue[issue_key]['labels'] = worklog.get('labels', [])
@@ -1129,6 +1170,46 @@ class JiraWorklogExtractor:
 
         total_hours = total_seconds / 3600
 
+        # NEW: Aggregate by Component + Label + Product Item combination
+        by_component_label_product = defaultdict(lambda: {'hours': 0, 'entries': 0, 'issues': set()})
+        for worklog in worklogs:
+            components = worklog.get('components', [])
+            labels = worklog.get('labels', [])
+            product_item = worklog.get('product_item', 'None')
+            seconds = worklog['time_spent_seconds']
+            issue_key = worklog['issue_key']
+
+            component_str = ', '.join(sorted(components)) if components else 'None'
+            label_str = ', '.join(sorted(labels)) if labels else 'None'
+
+            key = f"{component_str} | {label_str} | {product_item}"
+            by_component_label_product[key]['hours'] += seconds / 3600
+            by_component_label_product[key]['entries'] += 1
+            by_component_label_product[key]['issues'].add(issue_key)
+            by_component_label_product[key]['components'] = component_str
+            by_component_label_product[key]['labels'] = label_str
+            by_component_label_product[key]['product_item'] = product_item
+
+        # NEW: Aggregate by Team + Component + Label combination
+        by_team_component_label = defaultdict(lambda: {'hours': 0, 'entries': 0, 'issues': set()})
+        for worklog in worklogs:
+            team = worklog.get('team', 'None')
+            components = worklog.get('components', [])
+            labels = worklog.get('labels', [])
+            seconds = worklog['time_spent_seconds']
+            issue_key = worklog['issue_key']
+
+            component_str = ', '.join(sorted(components)) if components else 'None'
+            label_str = ', '.join(sorted(labels)) if labels else 'None'
+
+            key = f"{team} | {component_str} | {label_str}"
+            by_team_component_label[key]['hours'] += seconds / 3600
+            by_team_component_label[key]['entries'] += 1
+            by_team_component_label[key]['issues'].add(issue_key)
+            by_team_component_label[key]['team'] = team
+            by_team_component_label[key]['components'] = component_str
+            by_team_component_label[key]['labels'] = label_str
+
         # Sort data
         authors_sorted = sorted(by_author.items(), key=lambda x: x[1]['hours'], reverse=True)
         issues_sorted = sorted(by_issue.items(), key=lambda x: x[1]['hours'], reverse=True)
@@ -1137,6 +1218,149 @@ class JiraWorklogExtractor:
         components_sorted = sorted(by_component.items(), key=lambda x: x[1]['hours'], reverse=True)
         labels_sorted = sorted(by_label.items(), key=lambda x: x[1]['hours'], reverse=True)
         teams_sorted = sorted(by_team.items(), key=lambda x: x[1]['hours'], reverse=True)
+        component_label_product_sorted = sorted(by_component_label_product.items(), key=lambda x: x[1]['hours'], reverse=True)
+        team_component_label_sorted = sorted(by_team_component_label.items(), key=lambda x: x[1]['hours'], reverse=True)
+
+        # =============================================================================
+        # SMART INSIGHTS GENERATION
+        # =============================================================================
+
+        insights = []
+
+        # 1. Top Contributor Insight
+        if authors_sorted:
+            top_author = authors_sorted[0]
+            top_percentage = (top_author[1]['hours'] / total_hours * 100) if total_hours > 0 else 0
+            insights.append({
+                'type': 'info',
+                'icon': '👤',
+                'title': 'Top Contributor',
+                'description': f"{top_author[0]} is the highest contributor with {top_author[1]['hours']:.1f} hours ({top_percentage:.1f}% of total time)",
+                'metric': f"{top_author[1]['hours']:.1f}h",
+                'recommendation': 'Recognize their contribution and ensure sustainable workload'
+            })
+
+        # 2. Workload Balance Analysis (Gini Coefficient)
+        if len(authors_sorted) > 2:
+            hours_list = sorted([stats['hours'] for _, stats in authors_sorted])
+            n = len(hours_list)
+            total_h = sum(hours_list)
+            if total_h > 0:
+                gini = (2 * sum((i+1) * h for i, h in enumerate(hours_list))) / (n * total_h) - (n+1)/n
+                if gini > 0.5:
+                    insights.append({
+                        'type': 'warning',
+                        'icon': '⚠️',
+                        'title': 'Unbalanced Workload Distribution',
+                        'description': f"Work distribution is highly unbalanced (Gini: {gini:.2f}). Top {len([a for a in authors_sorted if a[1]['hours'] > total_hours/n])} contributors account for disproportionate hours",
+                        'metric': f"Gini: {gini:.2f}",
+                        'recommendation': 'Consider redistributing work more evenly across team members'
+                    })
+                elif gini < 0.3:
+                    insights.append({
+                        'type': 'success',
+                        'icon': '✅',
+                        'title': 'Well-Balanced Workload',
+                        'description': f"Work is evenly distributed across contributors (Gini: {gini:.2f})",
+                        'metric': f"Gini: {gini:.2f}",
+                        'recommendation': 'Maintain current work allocation strategy'
+                    })
+
+        # 3. Team Focus Analysis
+        if teams_sorted and len(teams_sorted) > 0:
+            top_team = teams_sorted[0]
+            team_percentage = (top_team[1]['hours'] / total_hours * 100) if total_hours > 0 else 0
+            if team_percentage > 40:
+                insights.append({
+                    'type': 'info',
+                    'icon': '🎯',
+                    'title': 'Primary Team Identified',
+                    'description': f"{top_team[0]} accounts for {team_percentage:.1f}% of total effort ({top_team[1]['hours']:.1f} hours)",
+                    'metric': f"{team_percentage:.1f}%",
+                    'recommendation': 'This team is critical to project success - ensure adequate support'
+                })
+
+        # 4. High-Value Issues (Bottleneck Detection)
+        if len(issues_sorted) > 5:
+            avg_hours_per_issue = sum(stats['hours'] for _, stats in issues_sorted) / len(issues_sorted)
+            high_effort_issues = [(key, stats) for key, stats in issues_sorted if stats['hours'] > avg_hours_per_issue * 2]
+            if high_effort_issues:
+                top_bottleneck = high_effort_issues[0]
+                ratio = top_bottleneck[1]['hours'] / avg_hours_per_issue
+                insights.append({
+                    'type': 'warning',
+                    'icon': '🐌',
+                    'title': 'Potential Bottleneck Detected',
+                    'description': f"Issue {top_bottleneck[0]} took {ratio:.1f}x longer than average ({top_bottleneck[1]['hours']:.1f}h vs {avg_hours_per_issue:.1f}h avg)",
+                    'metric': f"{ratio:.1f}x avg",
+                    'recommendation': 'Investigate complexity factors and consider breaking down similar issues'
+                })
+
+        # 5. Component Concentration
+        if components_sorted and len(components_sorted) > 2:
+            top_component = components_sorted[0]
+            comp_percentage = (top_component[1]['hours'] / total_hours * 100) if total_hours > 0 else 0
+            if comp_percentage > 30:
+                insights.append({
+                    'type': 'info',
+                    'icon': '🧩',
+                    'title': 'Component Focus Area',
+                    'description': f"Component '{top_component[0]}' consumes {comp_percentage:.1f}% of effort ({top_component[1]['hours']:.1f} hours)",
+                    'metric': f"{comp_percentage:.1f}%",
+                    'recommendation': 'Consider if this component needs additional resources or optimization'
+                })
+
+        # 6. Outlier Detection (Z-Score for extreme hours)
+        if len(authors_sorted) > 3:
+            import statistics
+            hours_values = [stats['hours'] for _, stats in authors_sorted]
+            mean_hours = statistics.mean(hours_values)
+            if len(hours_values) > 1:
+                stdev_hours = statistics.stdev(hours_values)
+                outliers = [(author, stats) for author, stats in authors_sorted
+                           if abs(stats['hours'] - mean_hours) / stdev_hours > 2 if stdev_hours > 0]
+                if outliers:
+                    outlier = outliers[0]
+                    z_score = abs(outlier[1]['hours'] - mean_hours) / stdev_hours if stdev_hours > 0 else 0
+                    if outlier[1]['hours'] > mean_hours:
+                        insights.append({
+                            'type': 'critical',
+                            'icon': '🔥',
+                            'title': 'Potential Overwork Detected',
+                            'description': f"{outlier[0]} logged {outlier[1]['hours']:.1f} hours - significantly above average ({mean_hours:.1f}h)",
+                            'metric': f"{z_score:.1f}σ above",
+                            'recommendation': 'Monitor for burnout risk and consider workload adjustment'
+                        })
+
+        # 7. Activity Concentration (entries per person)
+        if authors_sorted:
+            avg_entries_per_person = sum(stats['entries'] for _, stats in authors_sorted) / len(authors_sorted)
+            high_activity = [(author, stats) for author, stats in authors_sorted if stats['entries'] > avg_entries_per_person * 1.5]
+            if high_activity and len(high_activity) <= 3:
+                top_active = high_activity[0]
+                insights.append({
+                    'type': 'info',
+                    'icon': '📝',
+                    'title': 'High Activity Level',
+                    'description': f"{top_active[0]} has {top_active[1]['entries']} worklog entries ({(top_active[1]['entries']/avg_entries_per_person):.1f}x average)",
+                    'metric': f"{top_active[1]['entries']} entries",
+                    'recommendation': 'High engagement - ensure quality of work logging is maintained'
+                })
+
+        # 8. Product Item Diversity
+        if len(product_items_sorted) > 3:
+            insights.append({
+                'type': 'success',
+                'icon': '📦',
+                'title': 'Diverse Product Coverage',
+                'description': f"Work spans {len(product_items_sorted)} product items, showing broad project scope",
+                'metric': f"{len(product_items_sorted)} items",
+                'recommendation': 'Ensure cross-product coordination and knowledge sharing'
+            })
+
+        # Sort insights by priority (critical > warning > info > success)
+        priority_order = {'critical': 0, 'warning': 1, 'info': 2, 'success': 3}
+        insights.sort(key=lambda x: priority_order.get(x['type'], 99))
 
         # Generate HTML
         html = f"""<!DOCTYPE html>
@@ -1359,6 +1583,31 @@ class JiraWorklogExtractor:
             font-size: 0.9em;
         }}
 
+        /* Compact table styles for detailed data tables */
+        .compact-table {{
+            font-size: 0.8em;
+        }}
+
+        .compact-table th {{
+            padding: 10px 12px;
+            font-size: 0.8em;
+        }}
+
+        .compact-table td {{
+            padding: 8px 12px;
+            font-size: 0.85em;
+            line-height: 1.4;
+        }}
+
+        .compact-table .progress-bar {{
+            height: 20px;
+        }}
+
+        .compact-table .progress-fill {{
+            font-size: 0.75em;
+            padding: 0 8px;
+        }}
+
         .nav-menu {{
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             padding: 20px 40px;
@@ -1385,6 +1634,146 @@ class JiraWorklogExtractor:
             background: rgba(255, 255, 255, 0.3);
             transform: translateY(-2px);
             box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+        }}
+
+        /* Smart Insights Styles */
+        .insights-container {{
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+            gap: 20px;
+            padding: 40px;
+            background: #f8f9fa;
+        }}
+
+        .insight-card {{
+            background: white;
+            border-radius: 12px;
+            padding: 24px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            transition: transform 0.2s, box-shadow 0.2s;
+            position: relative;
+            overflow: hidden;
+        }}
+
+        .insight-card:hover {{
+            transform: translateY(-4px);
+            box-shadow: 0 8px 16px rgba(0,0,0,0.15);
+        }}
+
+        .insight-card.critical {{
+            border-left: 5px solid #ef4444;
+        }}
+
+        .insight-card.warning {{
+            border-left: 5px solid #f59e0b;
+        }}
+
+        .insight-card.info {{
+            border-left: 5px solid #3b82f6;
+        }}
+
+        .insight-card.success {{
+            border-left: 5px solid #10b981;
+        }}
+
+        .insight-header {{
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 12px;
+        }}
+
+        .insight-icon {{
+            font-size: 2em;
+            line-height: 1;
+        }}
+
+        .insight-title {{
+            font-size: 1.2em;
+            font-weight: 700;
+            color: #1f2937;
+            flex: 1;
+        }}
+
+        .insight-metric {{
+            font-size: 1.5em;
+            font-weight: 700;
+            margin-left: auto;
+        }}
+
+        .insight-card.critical .insight-metric {{
+            color: #ef4444;
+        }}
+
+        .insight-card.warning .insight-metric {{
+            color: #f59e0b;
+        }}
+
+        .insight-card.info .insight-metric {{
+            color: #3b82f6;
+        }}
+
+        .insight-card.success .insight-metric {{
+            color: #10b981;
+        }}
+
+        .insight-description {{
+            color: #4b5563;
+            line-height: 1.6;
+            margin-bottom: 12px;
+            font-size: 0.95em;
+        }}
+
+        .insight-recommendation {{
+            background: #f3f4f6;
+            padding: 12px;
+            border-radius: 6px;
+            font-size: 0.9em;
+            color: #374151;
+            border-left: 3px solid #9ca3af;
+        }}
+
+        .insight-recommendation:before {{
+            content: "💡 ";
+            font-weight: bold;
+        }}
+
+        .insights-title {{
+            padding: 40px 40px 0 40px;
+            font-size: 2em;
+            color: #1f2937;
+            font-weight: 700;
+        }}
+
+        .insights-subtitle {{
+            padding: 0 40px 20px 40px;
+            color: #6b7280;
+            font-size: 1.1em;
+        }}
+
+        /* Charts Container */
+        .charts-section {{
+            padding: 40px;
+            background: #ffffff;
+        }}
+
+        .chart-container {{
+            background: white;
+            border-radius: 12px;
+            padding: 24px;
+            margin-bottom: 30px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }}
+
+        .chart-title {{
+            font-size: 1.4em;
+            margin-bottom: 20px;
+            color: #1f2937;
+            font-weight: 600;
+        }}
+
+        .chart-canvas {{
+            max-height: 400px;
         }}
 
         @media print {{
@@ -1433,16 +1822,84 @@ class JiraWorklogExtractor:
 
         <!-- Navigation Menu -->
         <div class="nav-menu">
-            <a href="#insights">📊 Insights</a>
+            <a href="#insights">🤖 Smart Insights</a>
+            <a href="#charts">📊 Interactive Charts</a>
             <a href="#jql-queries">🔍 JQL Queries</a>
             <a href="#year-month">📅 By Year/Month</a>
             <a href="#product-item">📦 By Product Item</a>
             <a href="#component">🧩 By Component</a>
             <a href="#label">🏷️ By Label</a>
             <a href="#team">👥 By Team</a>
+            <a href="#component-label-product">🔗 By Component, Label & Product</a>
+            <a href="#team-component-label">🏢 By Team, Component & Label</a>
             <a href="#author">✍️ By Author</a>
             <a href="#issue">🎯 By Issue</a>
             <a href="#all-entries">📋 All Entries</a>
+        </div>
+
+        <!-- Smart Insights Section -->
+        <div id="insights">
+            <h2 class="insights-title">🤖 Smart Insights & Recommendations</h2>
+            <p class="insights-subtitle">AI-powered analysis of your worklog data with actionable recommendations</p>
+            <div class="insights-container">
+"""
+
+        # Generate insight cards
+        for insight in insights:
+            html += f"""
+                <div class="insight-card {insight['type']}">
+                    <div class="insight-header">
+                        <span class="insight-icon">{insight['icon']}</span>
+                        <span class="insight-title">{insight['title']}</span>
+                        <span class="insight-metric">{insight['metric']}</span>
+                    </div>
+                    <div class="insight-description">{insight['description']}</div>
+                    <div class="insight-recommendation">{insight['recommendation']}</div>
+                </div>
+"""
+
+        html += """
+            </div>
+        </div>
+
+        <!-- Interactive Data Visualizations Section -->
+        <div class="section" id="charts" style="background: #f8f9fa;">
+            <h2 class="section-title">📊 Interactive Data Visualizations</h2>
+            <p style="color: #666; margin-bottom: 30px; font-size: 1.1em;">Explore your worklog data through interactive charts - hover for details, click legends to show/hide data</p>
+
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(500px, 1fr)); gap: 30px; margin-bottom: 30px;">
+                <!-- Team Distribution Pie Chart -->
+                <div class="chart-container" style="background: white; padding: 25px; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
+                    <h3 style="margin-bottom: 20px; color: #333; font-size: 1.3em;">🏢 Hours Distribution by Team</h3>
+                    <canvas id="teamPieChart" style="max-height: 350px;"></canvas>
+                </div>
+
+                <!-- Top Contributors Bar Chart -->
+                <div class="chart-container" style="background: white; padding: 25px; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
+                    <h3 style="margin-bottom: 20px; color: #333; font-size: 1.3em;">👥 Top 10 Contributors</h3>
+                    <canvas id="topContributorsChart" style="max-height: 350px;"></canvas>
+                </div>
+            </div>
+
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(500px, 1fr)); gap: 30px; margin-bottom: 30px;">
+                <!-- Component Breakdown -->
+                <div class="chart-container" style="background: white; padding: 25px; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
+                    <h3 style="margin-bottom: 20px; color: #333; font-size: 1.3em;">🧩 Hours by Component</h3>
+                    <canvas id="componentChart" style="max-height: 350px;"></canvas>
+                </div>
+
+                <!-- Product Item Breakdown -->
+                <div class="chart-container" style="background: white; padding: 25px; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
+                    <h3 style="margin-bottom: 20px; color: #333; font-size: 1.3em;">📦 Hours by Product Item</h3>
+                    <canvas id="productItemChart" style="max-height: 350px;"></canvas>
+                </div>
+            </div>
+
+            <!-- Time Series Line Chart (Full Width) -->
+            <div class="chart-container" style="background: white; padding: 25px; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); margin-bottom: 30px;">
+                <h3 style="margin-bottom: 20px; color: #333; font-size: 1.3em;">📈 Time Series: Hours Logged Over Time</h3>
+                <canvas id="timeSeriesChart" style="max-height: 400px;"></canvas>
+            </div>
         </div>
 
         <!-- Analytics Section -->"""
@@ -1901,6 +2358,126 @@ class JiraWorklogExtractor:
             </table>
         </div>
 
+        <div class="section" id="component-label-product">
+            <h2 class="section-title">Hours by Component, Label & Product Item</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Component</th>
+                        <th>Label</th>
+                        <th>Product Item</th>
+                        <th>Hours</th>
+                        <th>Entries</th>
+                        <th>Issues</th>
+                        <th>% of Total</th>
+                        <th>Distribution</th>
+                    </tr>
+                </thead>
+                <tbody>
+"""
+
+        # Calculate totals for Component-Label-Product
+        clp_total_hours = sum(stats['hours'] for _, stats in component_label_product_sorted)
+        clp_total_entries = sum(stats['entries'] for _, stats in component_label_product_sorted)
+        clp_total_issues = len(set().union(*[stats['issues'] for _, stats in component_label_product_sorted]))
+
+        for key, stats in component_label_product_sorted:
+            percentage = (stats['hours'] / total_hours * 100) if total_hours > 0 else 0
+            issue_count = len(stats['issues'])
+            html += f"""
+                    <tr>
+                        <td>{stats['components']}</td>
+                        <td>{stats['labels']}</td>
+                        <td>{stats['product_item']}</td>
+                        <td>{stats['hours']:.2f}h</td>
+                        <td>{stats['entries']}</td>
+                        <td>{issue_count}</td>
+                        <td>{percentage:.1f}%</td>
+                        <td>
+                            <div class="progress-bar">
+                                <div class="progress-fill" style="width: {percentage}%">
+                                    {percentage:.1f}%
+                                </div>
+                            </div>
+                        </td>
+                    </tr>
+"""
+
+        html += f"""
+                </tbody>
+                <tfoot>
+                    <tr style="font-weight: bold; background-color: #f0f0f0;">
+                        <td colspan="3">TOTAL</td>
+                        <td>{clp_total_hours:.2f}h</td>
+                        <td>{clp_total_entries}</td>
+                        <td>{clp_total_issues}</td>
+                        <td>100.0%</td>
+                        <td></td>
+                    </tr>
+                </tfoot>
+            </table>
+        </div>
+
+        <div class="section" id="team-component-label">
+            <h2 class="section-title">Hours by Team, Component & Label</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Team</th>
+                        <th>Component</th>
+                        <th>Label</th>
+                        <th>Hours</th>
+                        <th>Entries</th>
+                        <th>Issues</th>
+                        <th>% of Total</th>
+                        <th>Distribution</th>
+                    </tr>
+                </thead>
+                <tbody>
+"""
+
+        # Calculate totals for Team-Component-Label
+        tcl_total_hours = sum(stats['hours'] for _, stats in team_component_label_sorted)
+        tcl_total_entries = sum(stats['entries'] for _, stats in team_component_label_sorted)
+        tcl_total_issues = len(set().union(*[stats['issues'] for _, stats in team_component_label_sorted]))
+
+        for key, stats in team_component_label_sorted:
+            percentage = (stats['hours'] / total_hours * 100) if total_hours > 0 else 0
+            issue_count = len(stats['issues'])
+            html += f"""
+                    <tr>
+                        <td>{stats['team']}</td>
+                        <td>{stats['components']}</td>
+                        <td>{stats['labels']}</td>
+                        <td>{stats['hours']:.2f}h</td>
+                        <td>{stats['entries']}</td>
+                        <td>{issue_count}</td>
+                        <td>{percentage:.1f}%</td>
+                        <td>
+                            <div class="progress-bar">
+                                <div class="progress-fill" style="width: {percentage}%">
+                                    {percentage:.1f}%
+                                </div>
+                            </div>
+                        </td>
+                    </tr>
+"""
+
+        html += f"""
+                </tbody>
+                <tfoot>
+                    <tr style="font-weight: bold; background-color: #f0f0f0;">
+                        <td colspan="3">TOTAL</td>
+                        <td>{tcl_total_hours:.2f}h</td>
+                        <td>{tcl_total_entries}</td>
+                        <td>{tcl_total_issues}</td>
+                        <td>100.0%</td>
+                        <td></td>
+                    </tr>
+                </tfoot>
+            </table>
+        </div>
+
         <div class="section" id="author">
             <h2 class="section-title">Hours by Author</h2>
             <table>
@@ -1950,13 +2527,26 @@ class JiraWorklogExtractor:
             for worklog in sorted(stats['worklogs'], key=lambda x: x['started'], reverse=True):
                 comment = worklog['comment'] if worklog['comment'] else 'No comment'
                 epic_display = f" • Epic: {worklog['epic_link']}" if worklog['epic_link'] else ''
+
+                # Get additional fields
+                product_item = worklog.get('product_item', 'None')
+                team = worklog.get('team', 'None')
+                components = worklog.get('components', [])
+                labels = worklog.get('labels', [])
+
+                # Format additional fields
+                product_item_display = f" • Product: {product_item}" if product_item and product_item != 'None' else ''
+                team_display = f" • Team: {team}" if team and team != 'None' else ''
+                components_display = f" • Components: {', '.join(components)}" if components else ''
+                labels_display = f" • Labels: {', '.join(labels)}" if labels else ''
+
                 issue_link = make_issue_link(worklog['issue_key'])
                 html += f"""
                                 <div class="worklog-entry">
                                     <div class="worklog-meta">
                                         {issue_link} ({worklog['issue_type']}) •
                                         {worklog['time_spent']} •
-                                        {worklog['started'][:10]}{epic_display}
+                                        {worklog['started'][:10]}{epic_display}{product_item_display}{team_display}{components_display}{labels_display}
                                     </div>
                                     <div class="worklog-comment">{comment}</div>
                                 </div>
@@ -1985,13 +2575,14 @@ class JiraWorklogExtractor:
 
         <div class="section" id="issue">
             <h2 class="section-title">Hours by Issue</h2>
-            <table>
+            <table class="compact-table">
                 <thead>
                     <tr>
                         <th>Issue Key</th>
                         <th>Summary</th>
                         <th>Type</th>
                         <th>Epic Link</th>
+                        <th>Parent Link</th>
                         <th>Product Item</th>
                         <th>Component</th>
                         <th>Label</th>
@@ -2014,7 +2605,25 @@ class JiraWorklogExtractor:
         for issue_key, stats in issues_sorted:
             percentage = (stats['hours'] / total_hours * 100) if total_hours > 0 else 0
             contributors = ', '.join(sorted(stats['authors']))
-            epic_link = stats['epic_link'] if stats['epic_link'] else '-'
+
+            # Create epic link with name
+            if stats['epic_link'] and stats.get('epic_name'):
+                epic_display = make_issue_link(stats['epic_link'])
+                epic_display = epic_display.replace(f">{stats['epic_link']}<", f">{stats['epic_name']}<")
+            elif stats['epic_link']:
+                epic_display = make_issue_link(stats['epic_link'])
+            else:
+                epic_display = '-'
+
+            # Create parent link with name
+            if stats.get('parent_link') and stats.get('parent_name'):
+                parent_display = make_issue_link(stats['parent_link'])
+                parent_display = parent_display.replace(f">{stats['parent_link']}<", f">{stats['parent_name']}<")
+            elif stats.get('parent_link'):
+                parent_display = make_issue_link(stats['parent_link'])
+            else:
+                parent_display = '-'
+
             summary = stats['summary'] if stats['summary'] else '-'
 
             # Format the 4 new fields
@@ -2029,7 +2638,8 @@ class JiraWorklogExtractor:
                         <td>{issue_link}</td>
                         <td>{summary}</td>
                         <td>{stats['issue_type']}</td>
-                        <td>{epic_link}</td>
+                        <td>{epic_display}</td>
+                        <td>{parent_display}</td>
                         <td>{product_item}</td>
                         <td>{components}</td>
                         <td>{labels}</td>
@@ -2052,7 +2662,7 @@ class JiraWorklogExtractor:
                 </tbody>
                 <tfoot>
                     <tr style="font-weight: bold; background-color: #f0f0f0;">
-                        <td colspan="8">TOTAL</td>
+                        <td colspan="9">TOTAL</td>
                         <td>{issue_total_hours:.2f}h</td>
                         <td>{issue_total_entries}</td>
                         <td>{issue_total_contributors} unique</td>
@@ -2065,13 +2675,14 @@ class JiraWorklogExtractor:
 
         <div class="section" id="all-entries">
             <h2 class="section-title">All Worklog Entries</h2>
-            <table>
+            <table class="compact-table">
                 <thead>
                     <tr>
                         <th>Issue</th>
                         <th>Summary</th>
                         <th>Type</th>
                         <th>Epic Link</th>
+                        <th>Parent Link</th>
                         <th>Author</th>
                         <th>Date</th>
                         <th>Time Spent</th>
@@ -2084,7 +2695,25 @@ class JiraWorklogExtractor:
         for worklog in sorted(worklogs, key=lambda x: x['started'], reverse=True):
             comment = worklog['comment'][:100] + '...' if len(worklog['comment']) > 100 else worklog['comment']
             comment = comment if comment else 'No comment'
-            epic_link = worklog['epic_link'] if worklog['epic_link'] else '-'
+
+            # Create epic link with name
+            if worklog['epic_link'] and worklog.get('epic_name'):
+                epic_display = make_issue_link(worklog['epic_link'])
+                epic_display = epic_display.replace(f">{worklog['epic_link']}<", f">{worklog['epic_name']}<")
+            elif worklog['epic_link']:
+                epic_display = make_issue_link(worklog['epic_link'])
+            else:
+                epic_display = '-'
+
+            # Create parent link with name
+            if worklog.get('parent_link') and worklog.get('parent_name'):
+                parent_display = make_issue_link(worklog['parent_link'])
+                parent_display = parent_display.replace(f">{worklog['parent_link']}<", f">{worklog['parent_name']}<")
+            elif worklog.get('parent_link'):
+                parent_display = make_issue_link(worklog['parent_link'])
+            else:
+                parent_display = '-'
+
             summary = worklog['summary'][:50] + '...' if len(worklog['summary']) > 50 else worklog['summary']
             summary = summary if summary else '-'
             issue_link = make_issue_link(worklog['issue_key'])
@@ -2093,7 +2722,8 @@ class JiraWorklogExtractor:
                         <td>{issue_link}</td>
                         <td>{summary}</td>
                         <td>{worklog['issue_type']}</td>
-                        <td>{epic_link}</td>
+                        <td>{epic_display}</td>
+                        <td>{parent_display}</td>
                         <td>{worklog['author']}</td>
                         <td>{worklog['started'][:10]}</td>
                         <td>{worklog['time_spent']}</td>
@@ -2315,6 +2945,338 @@ class JiraWorklogExtractor:
         loadDateFilter();
 
         // =============================================================================
+        // INTERACTIVE CHARTS DATA & INITIALIZATION
+        // =============================================================================
+
+        // Chart color palettes
+        const chartColors = [
+            'rgba(102, 126, 234, 0.8)',  // Purple
+            'rgba(118, 75, 162, 0.8)',   // Dark Purple
+            'rgba(239, 68, 68, 0.8)',    // Red
+            'rgba(245, 158, 11, 0.8)',   // Orange
+            'rgba(16, 185, 129, 0.8)',   // Green
+            'rgba(59, 130, 246, 0.8)',   // Blue
+            'rgba(139, 92, 246, 0.8)',   // Violet
+            'rgba(236, 72, 153, 0.8)',   // Pink
+            'rgba(20, 184, 166, 0.8)',   // Teal
+            'rgba(251, 146, 60, 0.8)',   // Amber
+            'rgba(14, 165, 233, 0.8)',   // Sky
+            'rgba(168, 85, 247, 0.8)',   // Purple
+            'rgba(249, 115, 22, 0.8)',   // Orange
+            'rgba(34, 197, 94, 0.8)',    // Emerald
+            'rgba(99, 102, 241, 0.8)'    // Indigo
+        ];
+
+        // Team Distribution Data
+        const teamLabels = """ + str([team for team, _ in teams_sorted[:10]]) + """;
+        const teamHours = """ + str([stats['hours'] for _, stats in teams_sorted[:10]]) + """;
+
+        // Top Contributors Data (Top 10)
+        const contributorLabels = """ + str([author for author, _ in authors_sorted[:10]]) + """;
+        const contributorHours = """ + str([stats['hours'] for _, stats in authors_sorted[:10]]) + """;
+
+        // Component Data (Top 10)
+        const componentLabels = """ + str([comp[:50] for comp, _ in components_sorted[:10]]) + """;
+        const componentHours = """ + str([stats['hours'] for _, stats in components_sorted[:10]]) + """;
+
+        // Product Item Data (Top 10)
+        const productItemLabels = """ + str([item[:50] if item != 'None' else 'Unspecified' for item, _ in product_items_sorted[:10]]) + """;
+        const productItemHours = """ + str([stats['hours'] for _, stats in product_items_sorted[:10]]) + """;
+
+        // Time Series Data (aggregated by date)
+        const timeSeriesLabels = """ + str([ym for ym, _ in year_month_sorted]) + """;
+        const timeSeriesHours = """ + str([stats['hours'] for _, stats in year_month_sorted]) + """;
+
+        // Create Team Distribution Pie Chart
+        const teamCtx = document.getElementById('teamPieChart').getContext('2d');
+        new Chart(teamCtx, {
+            type: 'doughnut',
+            data: {
+                labels: teamLabels,
+                datasets: [{
+                    data: teamHours,
+                    backgroundColor: chartColors,
+                    borderColor: 'white',
+                    borderWidth: 2
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: true,
+                plugins: {
+                    legend: {
+                        position: 'right',
+                        labels: {
+                            boxWidth: 15,
+                            padding: 10,
+                            font: {
+                                size: 11
+                            }
+                        }
+                    },
+                    tooltip: {
+                        callbacks: {
+                            label: function(context) {
+                                const label = context.label || '';
+                                const value = context.parsed || 0;
+                                const total = context.dataset.data.reduce((a, b) => a + b, 0);
+                                const percentage = ((value / total) * 100).toFixed(1);
+                                return label + ': ' + value.toFixed(1) + 'h (' + percentage + '%)';
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        // Create Top Contributors Bar Chart
+        const contributorCtx = document.getElementById('topContributorsChart').getContext('2d');
+        new Chart(contributorCtx, {
+            type: 'bar',
+            data: {
+                labels: contributorLabels,
+                datasets: [{
+                    label: 'Hours',
+                    data: contributorHours,
+                    backgroundColor: 'rgba(102, 126, 234, 0.8)',
+                    borderColor: 'rgba(102, 126, 234, 1)',
+                    borderWidth: 2,
+                    borderRadius: 5
+                }]
+            },
+            options: {
+                indexAxis: 'y',
+                responsive: true,
+                maintainAspectRatio: true,
+                plugins: {
+                    legend: {
+                        display: false
+                    },
+                    tooltip: {
+                        callbacks: {
+                            label: function(context) {
+                                return 'Hours: ' + context.parsed.x.toFixed(2) + 'h';
+                            }
+                        }
+                    }
+                },
+                scales: {
+                    x: {
+                        beginAtZero: true,
+                        title: {
+                            display: true,
+                            text: 'Hours',
+                            font: {
+                                size: 12,
+                                weight: 'bold'
+                            }
+                        },
+                        grid: {
+                            color: 'rgba(0, 0, 0, 0.05)'
+                        }
+                    },
+                    y: {
+                        grid: {
+                            display: false
+                        }
+                    }
+                }
+            }
+        });
+
+        // Create Component Chart
+        const componentCtx = document.getElementById('componentChart').getContext('2d');
+        new Chart(componentCtx, {
+            type: 'bar',
+            data: {
+                labels: componentLabels,
+                datasets: [{
+                    label: 'Hours',
+                    data: componentHours,
+                    backgroundColor: 'rgba(16, 185, 129, 0.8)',
+                    borderColor: 'rgba(16, 185, 129, 1)',
+                    borderWidth: 2,
+                    borderRadius: 5
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: true,
+                plugins: {
+                    legend: {
+                        display: false
+                    },
+                    tooltip: {
+                        callbacks: {
+                            label: function(context) {
+                                return 'Hours: ' + context.parsed.y.toFixed(2) + 'h';
+                            }
+                        }
+                    }
+                },
+                scales: {
+                    y: {
+                        beginAtZero: true,
+                        title: {
+                            display: true,
+                            text: 'Hours',
+                            font: {
+                                size: 12,
+                                weight: 'bold'
+                            }
+                        },
+                        grid: {
+                            color: 'rgba(0, 0, 0, 0.05)'
+                        }
+                    },
+                    x: {
+                        grid: {
+                            display: false
+                        },
+                        ticks: {
+                            maxRotation: 45,
+                            minRotation: 45
+                        }
+                    }
+                }
+            }
+        });
+
+        // Create Product Item Chart
+        const productItemCtx = document.getElementById('productItemChart').getContext('2d');
+        new Chart(productItemCtx, {
+            type: 'bar',
+            data: {
+                labels: productItemLabels,
+                datasets: [{
+                    label: 'Hours',
+                    data: productItemHours,
+                    backgroundColor: 'rgba(245, 158, 11, 0.8)',
+                    borderColor: 'rgba(245, 158, 11, 1)',
+                    borderWidth: 2,
+                    borderRadius: 5
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: true,
+                plugins: {
+                    legend: {
+                        display: false
+                    },
+                    tooltip: {
+                        callbacks: {
+                            label: function(context) {
+                                return 'Hours: ' + context.parsed.y.toFixed(2) + 'h';
+                            }
+                        }
+                    }
+                },
+                scales: {
+                    y: {
+                        beginAtZero: true,
+                        title: {
+                            display: true,
+                            text: 'Hours',
+                            font: {
+                                size: 12,
+                                weight: 'bold'
+                            }
+                        },
+                        grid: {
+                            color: 'rgba(0, 0, 0, 0.05)'
+                        }
+                    },
+                    x: {
+                        grid: {
+                            display: false
+                        },
+                        ticks: {
+                            maxRotation: 45,
+                            minRotation: 45
+                        }
+                    }
+                }
+            }
+        });
+
+        // Create Time Series Line Chart
+        const timeSeriesCtx = document.getElementById('timeSeriesChart').getContext('2d');
+        new Chart(timeSeriesCtx, {
+            type: 'line',
+            data: {
+                labels: timeSeriesLabels,
+                datasets: [{
+                    label: 'Hours Logged',
+                    data: timeSeriesHours,
+                    borderColor: 'rgba(102, 126, 234, 1)',
+                    backgroundColor: 'rgba(102, 126, 234, 0.1)',
+                    borderWidth: 3,
+                    fill: true,
+                    tension: 0.4,
+                    pointRadius: 4,
+                    pointHoverRadius: 6,
+                    pointBackgroundColor: 'rgba(102, 126, 234, 1)',
+                    pointBorderColor: 'white',
+                    pointBorderWidth: 2
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: true,
+                interaction: {
+                    mode: 'index',
+                    intersect: false
+                },
+                plugins: {
+                    legend: {
+                        display: false
+                    },
+                    tooltip: {
+                        callbacks: {
+                            label: function(context) {
+                                return 'Hours: ' + context.parsed.y.toFixed(2) + 'h';
+                            }
+                        }
+                    }
+                },
+                scales: {
+                    y: {
+                        beginAtZero: true,
+                        title: {
+                            display: true,
+                            text: 'Hours',
+                            font: {
+                                size: 14,
+                                weight: 'bold'
+                            }
+                        },
+                        grid: {
+                            color: 'rgba(0, 0, 0, 0.05)'
+                        }
+                    },
+                    x: {
+                        title: {
+                            display: true,
+                            text: 'Month',
+                            font: {
+                                size: 14,
+                                weight: 'bold'
+                            }
+                        },
+                        grid: {
+                            display: false
+                        },
+                        ticks: {
+                            maxRotation: 45,
+                            minRotation: 45
+                        }
+                    }
+                }
+            }
+        });
+
+        // =============================================================================
         // TABLE FILTERING AND SORTING FUNCTIONALITY
         // =============================================================================
 
@@ -2466,7 +3428,8 @@ class JiraWorklogExtractor:
         // Update visible row counts
         function updateVisibleCounts() {
             const tables = ['issueTable', 'authorTable', 'allEntriesTable', 'productItemTable',
-                          'componentTable', 'labelTable', 'teamTable'];
+                          'componentTable', 'labelTable', 'teamTable',
+                          'componentLabelProductTable', 'teamComponentLabelTable'];
 
             tables.forEach(tableId => {
                 const count = applyFilters(tableId);
@@ -2759,6 +3722,12 @@ class JiraWorklogExtractor:
             const teamTable = document.querySelector('#team table');
             if (teamTable) teamTable.id = 'teamTable';
 
+            const componentLabelProductTable = document.querySelector('#component-label-product table');
+            if (componentLabelProductTable) componentLabelProductTable.id = 'componentLabelProductTable';
+
+            const teamComponentLabelTable = document.querySelector('#team-component-label table');
+            if (teamComponentLabelTable) teamComponentLabelTable.id = 'teamComponentLabelTable';
+
             // Setup filters for Issue table
             if (issueTable) {
                 const productItems = getUniqueColumnValues('issueTable', 4);
@@ -2809,6 +3778,30 @@ class JiraWorklogExtractor:
             if (teamTable) {
                 createFilterControls('teamTable', []);
                 makeSortable('teamTable');
+            }
+
+            if (componentLabelProductTable) {
+                const components = getUniqueColumnValues('componentLabelProductTable', 0);
+                const labels = getUniqueColumnValues('componentLabelProductTable', 1);
+                const productItems = getUniqueColumnValues('componentLabelProductTable', 2);
+                createFilterControls('componentLabelProductTable', [
+                    { key: 'component', label: 'Component', icon: '🧩', options: components },
+                    { key: 'label', label: 'Label', icon: '🏷️', options: labels },
+                    { key: 'productItem', label: 'Product Item', icon: '📦', options: productItems }
+                ]);
+                makeSortable('componentLabelProductTable');
+            }
+
+            if (teamComponentLabelTable) {
+                const teams = getUniqueColumnValues('teamComponentLabelTable', 0);
+                const components = getUniqueColumnValues('teamComponentLabelTable', 1);
+                const labels = getUniqueColumnValues('teamComponentLabelTable', 2);
+                createFilterControls('teamComponentLabelTable', [
+                    { key: 'team', label: 'Team', icon: '👥', options: teams },
+                    { key: 'component', label: 'Component', icon: '🧩', options: components },
+                    { key: 'label', label: 'Label', icon: '🏷️', options: labels }
+                ]);
+                makeSortable('teamComponentLabelTable');
             }
 
             // Attach event listeners to all filter inputs

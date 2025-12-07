@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-**Version: 1.0.0**
+**Version: 1.2.0**
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
@@ -78,10 +78,14 @@ The `extract_worklogs` method:
 - `export_to_csv`: Writes structured CSV with issue type, epic link, and worklog details
 - `export_to_html`: Generates interactive HTML report with:
   - Summary dashboard with key metrics
+  - Smart Insights & Recommendations with AI-powered pattern detection
+  - Interactive Chart.js visualizations (pie charts, bar charts, time series)
   - Hours by author with expandable details
-  - Hours by issue breakdown
-  - Complete worklog entries table with issue type and epic link columns
+  - Hours by issue breakdown with epic names and parent links
+  - Complete worklog entries table with issue type, epic names, and parent links
   - Visual progress bars and percentage distributions
+  - Sortable and filterable tables
+  - Compact font sizing for detailed tables
 
 ## Modifying Filters
 
@@ -94,7 +98,15 @@ The script searches using JQL: `project = {PROJECT_KEY} AND "ERP Activity" ~ "{E
 ## Key Features
 
 - **Configurable logging**: Set `LOG_LEVEL = 2` to see detailed API calls, JQL queries, and responses
-- **Issue metadata**: Automatically fetches issue type and epic link for each worklog
+- **Enhanced issue metadata**: Automatically fetches issue type, epic name, parent link, team, components, labels, and product items
+- **Epic names display**: Shows human-readable epic names instead of keys (e.g., "SelfService backend for Zynergy (Invoice)" instead of "ZYN-48067")
+- **Parent link tracking**: Displays parent links of epics with clickable names
 - **Robust comment parsing**: Handles both plain text and Atlassian Document Format comments
-- **Interactive HTML reports**: Click "View Details" on any author to see their individual worklog entries
+- **Interactive HTML reports**:
+  - Smart Insights with 8 pattern detection algorithms (Gini coefficient, Z-score, bottleneck detection)
+  - 5 interactive Chart.js charts (team distribution pie, top contributors bar, component/product charts, time series)
+  - Sortable and filterable tables with column-specific filters
+  - Compact table styling for better information density
+  - Click "View Details" on any author to see their individual worklog entries
 - **Five-stage collection**: Ensures comprehensive coverage by expanding epics, following links, and including sub-tasks
+- **Performance optimized**: Parallel processing, caching, and efficient API calls
