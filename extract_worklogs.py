@@ -1083,9 +1083,11 @@ class JiraWorklogExtractor:
             return
 
         # Helper function to create Jira issue link
-        def make_issue_link(issue_key):
+        def make_issue_link(issue_key, display_text=None):
+            """Create a clickable link to a Jira issue. If display_text is provided, show that instead of the key."""
             jira_url = f"{self.jira_url}/browse/{issue_key}"
-            return f'<a href="{jira_url}" target="_blank" style="color: #0052CC; text-decoration: none; font-weight: bold;">{issue_key}</a>'
+            text = display_text if display_text else issue_key
+            return f'<a href="{jira_url}" target="_blank" style="color: #0052CC; text-decoration: none; font-weight: bold;">{text}</a>'
 
         # Calculate summary statistics
         by_author = defaultdict(lambda: {'hours': 0, 'entries': 0, 'worklogs': []})
@@ -2607,20 +2609,16 @@ class JiraWorklogExtractor:
             contributors = ', '.join(sorted(stats['authors']))
 
             # Create epic link with name
-            if stats['epic_link'] and stats.get('epic_name'):
-                epic_display = make_issue_link(stats['epic_link'])
-                epic_display = epic_display.replace(f">{stats['epic_link']}<", f">{stats['epic_name']}<")
-            elif stats['epic_link']:
-                epic_display = make_issue_link(stats['epic_link'])
+            if stats['epic_link']:
+                epic_name = stats.get('epic_name')
+                epic_display = make_issue_link(stats['epic_link'], epic_name if epic_name else None)
             else:
                 epic_display = '-'
 
             # Create parent link with name
-            if stats.get('parent_link') and stats.get('parent_name'):
-                parent_display = make_issue_link(stats['parent_link'])
-                parent_display = parent_display.replace(f">{stats['parent_link']}<", f">{stats['parent_name']}<")
-            elif stats.get('parent_link'):
-                parent_display = make_issue_link(stats['parent_link'])
+            if stats.get('parent_link'):
+                parent_name = stats.get('parent_name')
+                parent_display = make_issue_link(stats['parent_link'], parent_name if parent_name else None)
             else:
                 parent_display = '-'
 
@@ -2697,20 +2695,16 @@ class JiraWorklogExtractor:
             comment = comment if comment else 'No comment'
 
             # Create epic link with name
-            if worklog['epic_link'] and worklog.get('epic_name'):
-                epic_display = make_issue_link(worklog['epic_link'])
-                epic_display = epic_display.replace(f">{worklog['epic_link']}<", f">{worklog['epic_name']}<")
-            elif worklog['epic_link']:
-                epic_display = make_issue_link(worklog['epic_link'])
+            if worklog['epic_link']:
+                epic_name = worklog.get('epic_name')
+                epic_display = make_issue_link(worklog['epic_link'], epic_name if epic_name else None)
             else:
                 epic_display = '-'
 
             # Create parent link with name
-            if worklog.get('parent_link') and worklog.get('parent_name'):
-                parent_display = make_issue_link(worklog['parent_link'])
-                parent_display = parent_display.replace(f">{worklog['parent_link']}<", f">{worklog['parent_name']}<")
-            elif worklog.get('parent_link'):
-                parent_display = make_issue_link(worklog['parent_link'])
+            if worklog.get('parent_link'):
+                parent_name = worklog.get('parent_name')
+                parent_display = make_issue_link(worklog['parent_link'], parent_name if parent_name else None)
             else:
                 parent_display = '-'
 
