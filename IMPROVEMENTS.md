@@ -53,18 +53,19 @@ This document tracks potential improvements and enhancements for the Jira Worklo
 | 28 | **Gantt Clickable Links 🔗** | **🟡 Medium** | **✅ Completed** | **1h** | **2025-12-08** |
 
 ### Quick Stats
-- **Total Improvements:** 28
-- **Completed:** 28 (100%) ⚡
+- **Total Improvements:** 65
+- **Completed:** 28 (43%) ✅
 - **In Progress:** 0 (0%) 🔄
-- **Proposed:** 0 (0%)
+- **Proposed:** 37 (57%) 💡
 - **Rejected:** 0 (0%)
 
 ### By Priority
-- **🔴 High Priority:** 11 total (11 completed, 0 remaining) ✅
-- **🟡 Medium Priority:** 13 total (13 completed, 0 remaining) ✅
-- **🟢 Low Priority:** 3 total (3 completed, 0 remaining) ✅
+- **🔴 High Priority:** 19 total (11 completed, 8 proposed)
+- **🟡 Medium Priority:** 31 total (14 completed, 17 proposed)
+- **🟢 Low Priority:** 15 total (3 completed, 12 proposed)
 
-### 🎉 ALL IMPROVEMENTS COMPLETED! 🎉
+### 🎉 Phase 1 Complete - 28/28 Core Features Done!
+### 📋 Phase 2 Planning - 37 New Features Proposed
 
 ---
 
@@ -1464,6 +1465,302 @@ const jiraUrl = "https://jira.eg.dk";
 
 ---
 
+## Proposed Future Improvements
+
+The following improvements are proposed for future releases. They are organized by category and priority.
+
+### Gantt Chart Enhancements
+
+## 29. Export Gantt as Image/PDF 📸
+**Priority:** 🟡 Medium
+**Status:** ⬜ Proposed
+**Effort:** 2-3 hours
+
+Export Gantt chart as PNG, SVG, or PDF for presentations and sharing.
+
+## 30. Gantt Print Optimization 🖨️
+**Priority:** 🟢 Low
+**Status:** ⬜ Proposed
+**Effort:** 1-2 hours
+
+Optimize Gantt chart styling for printing with proper page breaks and scaling.
+
+## 31. Milestone Markers 🎯
+**Priority:** 🟡 Medium
+**Status:** ⬜ Proposed
+**Effort:** 2-3 hours
+
+Add visual milestone markers for important dates and project phases on the Gantt timeline.
+
+## 32. Resource Allocation View 👥
+**Priority:** 🟡 Medium
+**Status:** ⬜ Proposed
+**Effort:** 4-5 hours
+
+Show team member workload distribution over time with capacity planning.
+
+## 33. Gantt Zoom Controls 🔍
+**Priority:** 🟡 Medium
+**Status:** ⬜ Proposed
+**Effort:** 3-4 hours
+
+Add zoom in/out controls to view timeline at different granularities (day/week/month/quarter).
+
+---
+
+### Data Analysis Enhancements
+
+## 34. Burndown/Burnup Charts 📉
+**Priority:** 🔴 High
+**Status:** ⬜ Proposed
+**Effort:** 4-5 hours
+
+Track progress over time with burndown and burnup charts showing work remaining vs completed.
+
+## 35. Velocity Tracking 🏃
+**Priority:** 🔴 High
+**Status:** ⬜ Proposed
+**Effort:** 3-4 hours
+
+Calculate and visualize team velocity by sprint or time period for capacity planning.
+
+## 36. Forecast Completion 🔮
+**Priority:** 🟡 Medium
+**Status:** ⬜ Proposed
+**Effort:** 3-4 hours
+
+Predict project completion dates based on historical velocity and remaining work.
+
+## 37. Time Estimates vs Actuals ⏱️
+**Priority:** 🔴 High
+**Status:** ⬜ Proposed
+**Effort:** 3-4 hours
+
+Compare estimated hours vs actual logged hours for better future estimation.
+
+## 38. Cost Analysis 💰
+**Priority:** 🟡 Medium
+**Status:** ⬜ Proposed
+**Effort:** 2-3 hours
+
+Calculate project costs based on hourly rates and logged time.
+
+---
+
+### Reporting Enhancements
+
+## 39. Custom Report Templates 📋
+**Priority:** 🟡 Medium
+**Status:** ⬜ Proposed
+**Effort:** 6-8 hours
+
+Allow users to define custom report layouts and sections.
+
+## 40. Scheduled Reports 📅
+**Priority:** 🟡 Medium
+**Status:** ⬜ Proposed
+**Effort:** 8-10 hours
+
+Automatic weekly/monthly report generation with email delivery.
+
+## 41. Email Integration 📧
+**Priority:** 🟢 Low
+**Status:** ⬜ Proposed
+**Effort:** 4-5 hours
+
+Send reports directly via email to stakeholders.
+
+## 42. Dashboard View 📊
+**Priority:** 🔴 High
+**Status:** ⬜ Proposed
+**Effort:** 8-10 hours
+
+Executive summary dashboard with key metrics, trends, and at-a-glance status.
+
+## 43. Comparison Reports 📊
+**Priority:** 🟡 Medium
+**Status:** ⬜ Proposed
+**Effort:** 5-6 hours
+
+Compare multiple time periods side-by-side (month-over-month, year-over-year).
+
+---
+
+### User Experience Improvements
+
+## 44. Dark Mode 🌙
+**Priority:** 🟡 Medium
+**Status:** ⬜ Proposed
+**Effort:** 2-3 hours
+
+Toggle between light and dark themes for better viewing comfort.
+
+## 45. Mobile Responsive Design 📱
+**Priority:** 🟡 Medium
+**Status:** ⬜ Proposed
+**Effort:** 6-8 hours
+
+Optimize layouts and interactions for mobile and tablet devices.
+
+## 46. Keyboard Shortcuts ⌨️
+**Priority:** 🟢 Low
+**Status:** ⬜ Proposed
+**Effort:** 2-3 hours
+
+Add keyboard shortcuts for quick navigation and filtering.
+
+## 47. Saved Filter Presets 💾
+**Priority:** 🟡 Medium
+**Status:** ⬜ Proposed
+**Effort:** 1-2 hours
+
+Save and recall commonly used filter combinations.
+
+## 48. Bookmark/Share Links 🔗
+**Priority:** 🟢 Low
+**Status:** ⬜ Proposed
+**Effort:** 3-4 hours
+
+Generate shareable URLs with filter state for collaboration.
+
+---
+
+### Integration Enhancements
+
+## 49. Multiple Jira Projects 🔄
+**Priority:** 🔴 High
+**Status:** ⬜ Proposed
+**Effort:** 10-12 hours
+
+Support analyzing multiple projects simultaneously with cross-project aggregation.
+
+## 50. Export to Project Management Tools 📤
+**Priority:** 🟡 Medium
+**Status:** ⬜ Proposed
+**Effort:** 8-10 hours
+
+Export data to MS Project, Jira Portfolio, Monday.com, etc.
+
+## 51. REST API Endpoint 🔌
+**Priority:** 🟡 Medium
+**Status:** ⬜ Proposed
+**Effort:** 12-15 hours
+
+Expose extracted data via REST API for integration with other tools.
+
+## 52. Webhook Support 🔔
+**Priority:** 🟢 Low
+**Status:** ⬜ Proposed
+**Effort:** 8-10 hours
+
+Real-time updates when worklogs change in Jira.
+
+---
+
+### Performance & Scale
+
+## 53. Database Storage 💾
+**Priority:** 🔴 High
+**Status:** ⬜ Proposed
+**Effort:** 12-15 hours
+
+Store extracted data in SQLite/PostgreSQL for faster access and querying.
+
+## 54. Incremental Updates ⚡
+**Priority:** 🔴 High
+**Status:** ⬜ Proposed
+**Effort:** 6-8 hours
+
+Only fetch new or changed worklogs since last run for better performance.
+
+## 55. Background Processing 🔄
+**Priority:** 🟡 Medium
+**Status:** ⬜ Proposed
+**Effort:** 10-12 hours
+
+Queue-based processing for large datasets with progress tracking.
+
+## 56. Real-time Updates 🔴
+**Priority:** 🟢 Low
+**Status:** ⬜ Proposed
+**Effort:** 15-20 hours
+
+WebSocket support for live data updates without page refresh.
+
+---
+
+### Advanced Analytics
+
+## 57. Machine Learning Predictions 🤖
+**Priority:** 🟢 Low
+**Status:** ⬜ Proposed
+**Effort:** 20-30 hours
+
+Use ML to predict completion times, identify risks, and optimize resource allocation.
+
+## 58. Natural Language Queries 💬
+**Priority:** 🟢 Low
+**Status:** ⬜ Proposed
+**Effort:** 15-20 hours
+
+Query data using natural language: "Show me all work on feature X last month"
+
+## 59. Enhanced Anomaly Detection 🔍
+**Priority:** 🟡 Medium
+**Status:** ⬜ Proposed
+**Effort:** 6-8 hours
+
+More sophisticated anomaly detection algorithms with configurable thresholds.
+
+## 60. Sentiment Analysis 😊
+**Priority:** 🟢 Low
+**Status:** ⬜ Proposed
+**Effort:** 8-10 hours
+
+Analyze worklog comments for team morale and engagement indicators.
+
+## 61. Dependency Mapping 🕸️
+**Priority:** 🟡 Medium
+**Status:** ⬜ Proposed
+**Effort:** 6-8 hours
+
+Visualize issue dependencies and critical path analysis.
+
+---
+
+### Collaboration Features
+
+## 62. Comments/Annotations ✍️
+**Priority:** 🟢 Low
+**Status:** ⬜ Proposed
+**Effort:** 4-5 hours
+
+Add notes and annotations to reports for team collaboration.
+
+## 63. Multi-User Support 👥
+**Priority:** 🟡 Medium
+**Status:** ⬜ Proposed
+**Effort:** 15-20 hours
+
+Multiple users with role-based permissions and access control.
+
+## 64. Shared Dashboards 📺
+**Priority:** 🟡 Medium
+**Status:** ⬜ Proposed
+**Effort:** 8-10 hours
+
+Team dashboards that everyone can access and collaborate on.
+
+## 65. Change Tracking 📝
+**Priority:** 🟢 Low
+**Status:** ⬜ Proposed
+**Effort:** 3-4 hours
+
+Track who made what changes to configuration and when.
+
+---
+
 **Last Updated:** 2025-12-08
 **Current Version:** 1.4.0
-**Progress:** 100% Complete (28/28 improvements)
+**Completed:** 28/28 improvements (100%)
+**Proposed:** 37 new improvements
