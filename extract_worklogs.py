@@ -27,7 +27,7 @@ from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
 from openpyxl.utils import get_column_letter
 
 # Version
-VERSION = "1.2.0"
+VERSION = "1.4.0"
 
 # Load environment variables from .env file
 load_dotenv()
@@ -452,7 +452,7 @@ class JiraWorklogExtractor:
         return linked_issues
 
     def get_worklogs(self, issue_key):
-        """Get all worklogs for an issue (with caching)"""
+        """Get all worklogs for an issue with pagination support (with caching)"""
         # Check cache first
         cache_key = self._get_cache_key("worklogs", issue_key)
         cached_data = self._get_from_cache(cache_key)
@@ -460,30 +460,51 @@ class JiraWorklogExtractor:
             return cached_data
 
         url = f"{self.jira_url}/rest/api/2/issue/{issue_key}/worklog"
+        all_worklogs = []
+        start_at = 0
+        max_results = 1000  # Jira default max
 
         if self.log_level >= 2:
             print(f"[DEBUG] Getting worklogs for {issue_key}")
 
-        response = self.session.get(url)
+        while True:
+            params = {
+                'startAt': start_at,
+                'maxResults': max_results
+            }
 
-        if self.log_level >= 2:
-            print(f"[DEBUG] Response Status: {response.status_code}")
+            response = self.session.get(url, params=params)
 
-        if response.status_code != 200:
             if self.log_level >= 2:
-                print(f"[DEBUG] Response Body: {response.text[:500]}")
+                print(f"[DEBUG] Response Status: {response.status_code}")
 
-        response.raise_for_status()
-        data = response.json()
+            if response.status_code != 200:
+                if self.log_level >= 2:
+                    print(f"[DEBUG] Response Body: {response.text[:500]}")
 
-        worklogs = data.get('worklogs', [])
-        if worklogs and LOG_LEVEL >= 2:
-            print(f"[DEBUG] Found {len(worklogs)} worklog(s) for {issue_key}")
+            response.raise_for_status()
+            data = response.json()
+
+            worklogs = data.get('worklogs', [])
+            all_worklogs.extend(worklogs)
+
+            total = data.get('total', len(worklogs))
+            if self.log_level >= 2:
+                print(f"[DEBUG] Retrieved {len(worklogs)} worklog(s) (total: {total}, startAt: {start_at})")
+
+            # Check if we need to fetch more
+            if start_at + len(worklogs) >= total:
+                break
+
+            start_at += len(worklogs)
+
+        if all_worklogs and LOG_LEVEL >= 2:
+            print(f"[DEBUG] Found {len(all_worklogs)} total worklog(s) for {issue_key}")
 
         # Save to cache
-        self._save_to_cache(cache_key, worklogs)
+        self._save_to_cache(cache_key, all_worklogs)
 
-        return worklogs
+        return all_worklogs
 
     def find_issues_by_erp_activity(self):
         """Find all issues with ERP Activity filter"""
@@ -598,8 +619,8 @@ class JiraWorklogExtractor:
             return cached_data
 
         url = f"{self.jira_url}/rest/api/2/issue/{issue_key}"
-        # Fetch additional fields: components, labels, customfield_10101 (Epic Link), customfield_10502/customfield_11440 (Product Item), customfield_10216 (Team Name)
-        params = {"fields": "issuetype,customfield_10101,customfield_10014,summary,components,labels,customfield_10502,customfield_11440,customfield_10216,customfield_10076"}
+        # Fetch additional fields: components, labels, customfield_10101 (Epic Link), customfield_10502/customfield_11440 (Product Item), customfield_10216 (Team Name), date fields
+        params = {"fields": "issuetype,customfield_10101,customfield_10014,summary,components,labels,customfield_10502,customfield_11440,customfield_10216,customfield_10076,created,updated,duedate,customfield_11102,customfield_11103"}
 
         response = self.session.get(url, params=params)
         response.raise_for_status()
@@ -665,6 +686,20 @@ class JiraWorklogExtractor:
         if isinstance(team, dict):
             team = team.get('value', '') or team.get('name', '')
 
+        # Extract date fields and format them
+        def format_date(date_str):
+            """Convert ISO datetime to simple date format"""
+            if not date_str:
+                return ''
+            # Handle ISO format like "2025-04-01T09:50:04.647+0200"
+            return date_str.split('T')[0] if 'T' in date_str else date_str
+
+        created = format_date(fields.get('created', ''))
+        updated = format_date(fields.get('updated', ''))
+        duedate = format_date(fields.get('duedate', ''))
+        target_start = format_date(fields.get('customfield_11102', ''))
+        target_end = format_date(fields.get('customfield_11103', ''))
+
         metadata = {
             'issue_type': fields.get('issuetype', {}).get('name', 'Unknown'),
             'epic_link': epic_link,
@@ -675,7 +710,12 @@ class JiraWorklogExtractor:
             'components': component_names,
             'labels': labels,
             'product_item': product_item or 'None',
-            'team': team or 'None'
+            'team': team or 'None',
+            'created': created,
+            'updated': updated,
+            'duedate': duedate,
+            'target_start': target_start,
+            'target_end': target_end
         }
 
         # Save to cache
@@ -728,6 +768,11 @@ class JiraWorklogExtractor:
                     'labels': metadata.get('labels', []),
                     'product_item': metadata.get('product_item', 'None'),
                     'team': metadata.get('team', 'None'),
+                    'created': metadata.get('created', ''),
+                    'updated': metadata.get('updated', ''),
+                    'duedate': metadata.get('duedate', ''),
+                    'target_start': metadata.get('target_start', ''),
+                    'target_end': metadata.get('target_end', ''),
                     'worklog_id': worklog['id'],
                     'author': worklog['author'].get('displayName', 'Unknown'),
                     'author_email': worklog['author'].get('emailAddress', ''),
@@ -780,8 +825,9 @@ class JiraWorklogExtractor:
             return
 
         with open(filename, 'w', newline='', encoding='utf-8') as csvfile:
-            fieldnames = ['issue_key', 'summary', 'issue_type', 'epic_link', 'product_item', 'team', 'components', 'labels', 'author', 'author_email', 'time_spent',
-                         'time_spent_hours', 'started', 'comment']
+            fieldnames = ['issue_key', 'summary', 'issue_type', 'epic_link', 'product_item', 'team', 'components', 'labels',
+                         'created', 'updated', 'duedate', 'target_start', 'target_end',
+                         'author', 'author_email', 'time_spent', 'time_spent_hours', 'started', 'comment']
             writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
 
             writer.writeheader()
@@ -799,6 +845,11 @@ class JiraWorklogExtractor:
                     'team': worklog.get('team', 'None'),
                     'components': components,
                     'labels': labels,
+                    'created': worklog.get('created', ''),
+                    'updated': worklog.get('updated', ''),
+                    'duedate': worklog.get('duedate', ''),
+                    'target_start': worklog.get('target_start', ''),
+                    'target_end': worklog.get('target_end', ''),
                     'author': worklog['author'],
                     'author_email': worklog['author_email'],
                     'time_spent': worklog['time_spent'],
@@ -1103,7 +1154,7 @@ class JiraWorklogExtractor:
 
         # Calculate summary statistics
         by_author = defaultdict(lambda: {'hours': 0, 'entries': 0, 'worklogs': []})
-        by_issue = defaultdict(lambda: {'hours': 0, 'entries': 0, 'authors': set(), 'issue_type': '', 'epic_link': '', 'epic_name': '', 'parent_link': '', 'parent_name': '', 'summary': ''})
+        by_issue = defaultdict(lambda: {'hours': 0, 'entries': 0, 'authors': set(), 'issue_type': '', 'epic_link': '', 'epic_name': '', 'parent_link': '', 'parent_name': '', 'summary': '', 'start_date': None, 'end_date': None})
         by_year_month = defaultdict(lambda: {'hours': 0, 'entries': 0})
         by_product_item = defaultdict(lambda: {'hours': 0, 'entries': 0, 'issues': set()})
         by_component = defaultdict(lambda: {'hours': 0, 'entries': 0, 'issues': set()})
@@ -1133,6 +1184,19 @@ class JiraWorklogExtractor:
             by_issue[issue_key]['labels'] = worklog.get('labels', [])
             by_issue[issue_key]['product_item'] = worklog.get('product_item', 'None')
             by_issue[issue_key]['team'] = worklog.get('team', 'None')
+            by_issue[issue_key]['created'] = worklog.get('created', '')
+            by_issue[issue_key]['updated'] = worklog.get('updated', '')
+            by_issue[issue_key]['duedate'] = worklog.get('duedate', '')
+            by_issue[issue_key]['target_start'] = worklog.get('target_start', '')
+            by_issue[issue_key]['target_end'] = worklog.get('target_end', '')
+
+            # Track start and end dates based on worklogs
+            if worklog['started']:
+                worklog_date = worklog['started'][:10]  # YYYY-MM-DD
+                if by_issue[issue_key]['start_date'] is None or worklog_date < by_issue[issue_key]['start_date']:
+                    by_issue[issue_key]['start_date'] = worklog_date
+                if by_issue[issue_key]['end_date'] is None or worklog_date > by_issue[issue_key]['end_date']:
+                    by_issue[issue_key]['end_date'] = worklog_date
 
             # Extract year and month from worklog started date
             if worklog['started']:
@@ -1234,6 +1298,112 @@ class JiraWorklogExtractor:
         teams_sorted = sorted(by_team.items(), key=lambda x: x[1]['hours'], reverse=True)
         component_label_product_sorted = sorted(by_component_label_product.items(), key=lambda x: x[1]['hours'], reverse=True)
         team_component_label_sorted = sorted(by_team_component_label.items(), key=lambda x: x[1]['hours'], reverse=True)
+
+        # =============================================================================
+        # GANTT CHART HIERARCHICAL DATA STRUCTURE
+        # =============================================================================
+
+        # Build hierarchical structure: Parent Link → Epic → Issue → Subtask
+        gantt_hierarchy = defaultdict(lambda: {
+            'parent_name': '',
+            'hours': 0,
+            'start_date': None,
+            'end_date': None,
+            'epics': defaultdict(lambda: {
+                'epic_name': '',
+                'hours': 0,
+                'start_date': None,
+                'end_date': None,
+                'issues': defaultdict(lambda: {
+                    'summary': '',
+                    'issue_type': '',
+                    'hours': 0,
+                    'start_date': None,
+                    'end_date': None
+                })
+            })
+        })
+
+        # Populate the hierarchy from by_issue data
+        for issue_key, issue_data in by_issue.items():
+            parent_link = issue_data.get('parent_link', '')
+            parent_name = issue_data.get('parent_name', 'No Parent')
+            epic_link = issue_data.get('epic_link', '')
+            epic_name = issue_data.get('epic_name', issue_data.get('summary', 'No Epic'))
+            issue_type = issue_data.get('issue_type', 'Unknown')
+            summary = issue_data.get('summary', '')
+            hours = issue_data.get('hours', 0)
+            start_date = issue_data.get('start_date')
+            end_date = issue_data.get('end_date')
+
+            # Determine the key hierarchy
+            # If there's no parent_link but there's an epic_link, the epic itself might be the parent
+            # Otherwise, use the parent_link
+            if not parent_link and epic_link:
+                # This might be an epic or a story directly under an epic
+                parent_key = epic_link if epic_link else 'No Parent'
+            elif parent_link:
+                parent_key = parent_link
+            else:
+                parent_key = 'No Parent'
+
+            # For epics themselves, they might have a parent link
+            if issue_type == 'Epic':
+                # This is an epic - add it at the epic level
+                if not epic_link:
+                    epic_link = issue_key  # Use itself as epic link
+                    epic_name = summary
+            else:
+                # Not an epic - use the epic_link
+                if not epic_link:
+                    epic_link = 'No Epic'
+                    epic_name = 'No Epic'
+
+            # Update parent level
+            parent_data = gantt_hierarchy[parent_key]
+            if not parent_data['parent_name']:
+                parent_data['parent_name'] = parent_name if parent_name else parent_key
+            parent_data['hours'] += hours
+            if start_date:
+                if parent_data['start_date'] is None or start_date < parent_data['start_date']:
+                    parent_data['start_date'] = start_date
+            if end_date:
+                if parent_data['end_date'] is None or end_date > parent_data['end_date']:
+                    parent_data['end_date'] = end_date
+
+            # Update epic level
+            epic_data = parent_data['epics'][epic_link]
+            if not epic_data['epic_name']:
+                epic_data['epic_name'] = epic_name
+            epic_data['hours'] += hours
+            if start_date:
+                if epic_data['start_date'] is None or start_date < epic_data['start_date']:
+                    epic_data['start_date'] = start_date
+            if end_date:
+                if epic_data['end_date'] is None or end_date > epic_data['end_date']:
+                    epic_data['end_date'] = end_date
+
+            # Add issue
+            issue_item = epic_data['issues'][issue_key]
+            issue_item['summary'] = summary
+            issue_item['issue_type'] = issue_type
+            issue_item['hours'] = hours
+            issue_item['start_date'] = start_date
+            issue_item['end_date'] = end_date
+
+        # =============================================================================
+        # CREATE WORKLOG DATE MAPPING FOR GANTT FILTERING
+        # =============================================================================
+        # Create a mapping of issue_key -> list of worklogs with dates and hours
+        worklog_by_issue = defaultdict(list)
+        for worklog in worklogs:
+            if worklog.get('started'):
+                # Extract date in YYYY-MM-DD format
+                worklog_date = worklog['started'][:10]
+                worklog_by_issue[worklog['issue_key']].append({
+                    'date': worklog_date,
+                    'hours': worklog.get('time_spent_seconds', 0) / 3600
+                })
 
         # =============================================================================
         # SMART INSIGHTS GENERATION
@@ -1372,6 +1542,179 @@ class JiraWorklogExtractor:
                 'recommendation': 'Ensure cross-product coordination and knowledge sharing'
             })
 
+        # 9. Epic Complexity Analysis
+        epic_hours = defaultdict(float)
+        epic_issues = defaultdict(set)
+        for issue_key, stats in by_issue.items():
+            epic_link = stats.get('epic_link', '')
+            if epic_link:
+                epic_hours[epic_link] += stats['hours']
+                epic_issues[epic_link].add(issue_key)
+
+        if epic_hours:
+            sorted_epics = sorted(epic_hours.items(), key=lambda x: x[1], reverse=True)
+            if len(sorted_epics) > 0:
+                largest_epic = sorted_epics[0]
+                epic_name = next((stats.get('epic_name', largest_epic[0]) for _, stats in by_issue.items()
+                                 if stats.get('epic_link') == largest_epic[0]), largest_epic[0])
+                epic_pct = (largest_epic[1] / total_hours * 100) if total_hours > 0 else 0
+                issue_count = len(epic_issues[largest_epic[0]])
+
+                insights.append({
+                    'type': 'info',
+                    'icon': '📊',
+                    'title': 'Largest Epic Scope',
+                    'description': f"Epic '{epic_name}' contains {issue_count} issues with {largest_epic[1]:.1f} hours ({epic_pct:.1f}% of total)",
+                    'metric': f"{issue_count} issues",
+                    'recommendation': 'Monitor progress on this epic - consider breaking down if taking too long'
+                })
+
+        # 10. Parent Link Coverage (Business Project Analysis)
+        parent_hours = defaultdict(float)
+        parent_issues = defaultdict(set)
+        for issue_key, stats in by_issue.items():
+            parent_link = stats.get('parent_link', '')
+            if parent_link:
+                parent_hours[parent_link] += stats['hours']
+                parent_issues[parent_link].add(issue_key)
+
+        if parent_hours:
+            sorted_parents = sorted(parent_hours.items(), key=lambda x: x[1], reverse=True)
+            if len(sorted_parents) > 0:
+                main_parent = sorted_parents[0]
+                parent_name = next((stats.get('parent_name', main_parent[0]) for _, stats in by_issue.items()
+                                   if stats.get('parent_link') == main_parent[0]), main_parent[0])
+                parent_pct = (main_parent[1] / total_hours * 100) if total_hours > 0 else 0
+
+                insights.append({
+                    'type': 'info',
+                    'icon': '📁',
+                    'title': 'Primary Business Project',
+                    'description': f"'{parent_name}' is the main business project with {parent_pct:.1f}% of effort ({main_parent[1]:.1f} hours)",
+                    'metric': f"{parent_pct:.1f}%",
+                    'recommendation': 'This is the primary business driver - ensure alignment with business goals'
+                })
+
+        # 11. Label Distribution Insight
+        if labels_sorted and len(labels_sorted) > 1:
+            top_label = labels_sorted[0]
+            label_pct = (top_label[1]['hours'] / total_hours * 100) if total_hours > 0 else 0
+            if label_pct > 25 and top_label[0] != 'None':
+                insights.append({
+                    'type': 'info',
+                    'icon': '🏷️',
+                    'title': 'Dominant Label Category',
+                    'description': f"Label '{top_label[0]}' represents {label_pct:.1f}% of work ({top_label[1]['hours']:.1f} hours)",
+                    'metric': f"{label_pct:.1f}%",
+                    'recommendation': 'Track if this label indicates priority work or technical debt'
+                })
+
+        # 12. Issue Type Distribution
+        issue_type_hours = defaultdict(float)
+        issue_type_count = defaultdict(int)
+        for issue_key, stats in by_issue.items():
+            issue_type = stats.get('issue_type', 'Unknown')
+            issue_type_hours[issue_type] += stats['hours']
+            issue_type_count[issue_type] += 1
+
+        if issue_type_hours:
+            sorted_types = sorted(issue_type_hours.items(), key=lambda x: x[1], reverse=True)
+            top_type = sorted_types[0]
+            type_pct = (top_type[1] / total_hours * 100) if total_hours > 0 else 0
+
+            insights.append({
+                'type': 'info',
+                'icon': '📋',
+                'title': f'Primary Work Type: {top_type[0]}',
+                'description': f"{issue_type_count[top_type[0]]} {top_type[0]} issues consumed {type_pct:.1f}% of effort ({top_type[1]:.1f} hours)",
+                'metric': f"{type_pct:.1f}%",
+                'recommendation': 'Ensure team has right skills and tools for this work type'
+            })
+
+        # 13. Timeline Analysis (Project Duration)
+        all_dates = [datetime.fromisoformat(w['started'].replace('Z', '+00:00')) for w in worklogs if w['started']]
+        if all_dates:
+            first_date = min(all_dates)
+            last_date = max(all_dates)
+            total_days = (last_date - first_date).days + 1
+            active_days = len(set(d.date() for d in all_dates))
+            avg_hours_per_active_day = total_hours / active_days if active_days > 0 else 0
+
+            insights.append({
+                'type': 'info',
+                'icon': '📅',
+                'title': 'Project Timeline',
+                'description': f"Work spans {total_days} days ({first_date.strftime('%Y-%m-%d')} to {last_date.strftime('%Y-%m-%d')}) with {active_days} active working days",
+                'metric': f"{avg_hours_per_active_day:.1f}h/day",
+                'recommendation': f'Average daily effort is {avg_hours_per_active_day:.1f} hours on active days'
+            })
+
+        # 14. Team Collaboration Analysis
+        if len(teams_sorted) > 1:
+            # Count issues with multiple teams
+            multi_team_issues = 0
+            for issue_key in set(w['issue_key'] for w in worklogs):
+                issue_teams = set(w['team'] for w in worklogs if w['issue_key'] == issue_key and w.get('team') != 'None')
+                if len(issue_teams) > 1:
+                    multi_team_issues += 1
+
+            if multi_team_issues > 0:
+                collab_pct = (multi_team_issues / len(set(w['issue_key'] for w in worklogs))) * 100
+                insights.append({
+                    'type': 'success',
+                    'icon': '🤝',
+                    'title': 'Cross-Team Collaboration',
+                    'description': f"{multi_team_issues} issues ({collab_pct:.1f}%) involve multiple teams working together",
+                    'metric': f"{multi_team_issues} issues",
+                    'recommendation': 'Foster communication and coordination between collaborating teams'
+                })
+
+        # 15. Work Intensity Patterns (Entries per Hour)
+        if total_hours > 0:
+            avg_entry_size = total_hours / len(worklogs)
+            if avg_entry_size < 2:
+                insights.append({
+                    'type': 'info',
+                    'icon': '⏱️',
+                    'title': 'Granular Time Tracking',
+                    'description': f"Average worklog entry is {avg_entry_size:.1f} hours - team logs time in small increments",
+                    'metric': f"{avg_entry_size:.1f}h/entry",
+                    'recommendation': 'Detailed tracking is good, but ensure it doesn\'t create overhead'
+                })
+            elif avg_entry_size > 6:
+                insights.append({
+                    'type': 'warning',
+                    'icon': '⏱️',
+                    'title': 'Large Time Entries',
+                    'description': f"Average worklog entry is {avg_entry_size:.1f} hours - entries are quite large",
+                    'metric': f"{avg_entry_size:.1f}h/entry",
+                    'recommendation': 'Consider more frequent time logging for better accuracy'
+                })
+
+        # 16. Issue Completion Rate (if dates available)
+        issues_with_dates = [(k, v) for k, v in by_issue.items() if v.get('start_date') and v.get('end_date')]
+        if issues_with_dates:
+            durations = []
+            for issue_key, stats in issues_with_dates:
+                start = datetime.strptime(stats['start_date'], '%Y-%m-%d')
+                end = datetime.strptime(stats['end_date'], '%Y-%m-%d')
+                duration = (end - start).days + 1
+                durations.append(duration)
+
+            if durations:
+                avg_duration = sum(durations) / len(durations)
+                longest_duration = max(durations)
+
+                if longest_duration > avg_duration * 3:
+                    insights.append({
+                        'type': 'warning',
+                        'icon': '🐢',
+                        'title': 'Long-Running Issues Detected',
+                        'description': f"Some issues took {longest_duration} days (avg: {avg_duration:.1f} days)",
+                        'metric': f"{longest_duration} days max",
+                        'recommendation': 'Review long-running issues for blockers or scope creep'
+                    })
+
         # Sort insights by priority (critical > warning > info > success)
         priority_order = {'critical': 0, 'warning': 1, 'info': 2, 'success': 3}
         insights.sort(key=lambda x: priority_order.get(x['type'], 99))
@@ -1399,7 +1742,7 @@ class JiraWorklogExtractor:
         }}
 
         .container {{
-            max-width: 1400px;
+            max-width: 95%;
             margin: 0 auto;
             background: white;
             border-radius: 12px;
@@ -1598,19 +1941,27 @@ class JiraWorklogExtractor:
         }}
 
         /* Compact table styles for detailed data tables */
+        .table-wrapper {{
+            overflow-x: auto;
+            margin: 0 -20px;
+            padding: 0 20px;
+        }}
+
         .compact-table {{
-            font-size: 0.8em;
+            font-size: 0.75em;
+            min-width: 100%;
         }}
 
         .compact-table th {{
-            padding: 10px 12px;
-            font-size: 0.8em;
+            padding: 8px 10px;
+            font-size: 0.75em;
+            white-space: nowrap;
         }}
 
         .compact-table td {{
-            padding: 8px 12px;
-            font-size: 0.85em;
-            line-height: 1.4;
+            padding: 6px 10px;
+            font-size: 0.8em;
+            line-height: 1.3;
         }}
 
         .compact-table .progress-bar {{
@@ -1688,6 +2039,26 @@ class JiraWorklogExtractor:
 
         .insight-card.success {{
             border-left: 5px solid #10b981;
+        }}
+
+        /* Go to Top Button */
+        .go-to-top {{
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 10px 25px;
+            border-radius: 25px;
+            text-decoration: none;
+            font-size: 0.9em;
+            font-weight: 500;
+            display: inline-block;
+            transition: all 0.3s;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+            margin-top: 20px;
+        }}
+
+        .go-to-top:hover {{
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
         }}
 
         .insight-header {{
@@ -1838,6 +2209,7 @@ class JiraWorklogExtractor:
         <div class="nav-menu">
             <a href="#insights">🤖 Smart Insights</a>
             <a href="#charts">📊 Interactive Charts</a>
+            <a href="#gantt">📅 Gantt Chart</a>
             <a href="#jql-queries">🔍 JQL Queries</a>
             <a href="#year-month">📅 By Year/Month</a>
             <a href="#product-item">📦 By Product Item</a>
@@ -1873,6 +2245,9 @@ class JiraWorklogExtractor:
 """
 
         html += """
+            </div>
+            <div style="text-align: center; padding: 20px 40px;">
+                <a href="#" class="go-to-top">⬆️ Go to Top</a>
             </div>
         </div>
 
@@ -1913,6 +2288,88 @@ class JiraWorklogExtractor:
             <div class="chart-container" style="background: white; padding: 25px; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); margin-bottom: 30px;">
                 <h3 style="margin-bottom: 20px; color: #333; font-size: 1.3em;">📈 Time Series: Hours Logged Over Time</h3>
                 <canvas id="timeSeriesChart" style="max-height: 400px;"></canvas>
+            </div>
+            <div style="text-align: center; padding: 20px 40px;">
+                <a href="#" class="go-to-top">⬆️ Go to Top</a>
+            </div>
+        </div>
+
+        <!-- Gantt Chart Section -->
+        <div class="section" id="gantt" style="background: #f8f9fa;">
+            <h2 class="section-title">📅 Project Gantt Chart - WBS Hierarchy</h2>
+            <p style="color: #666; margin-bottom: 10px; font-size: 1.1em;">Interactive timeline showing Business Project → Epic → Story/Bug/Task → Subtask with aggregated hours</p>
+            <div id="ganttTotalHours" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 15px 20px; border-radius: 8px; margin-bottom: 20px; text-align: center; font-size: 1.2em; font-weight: 600; box-shadow: 0 2px 8px rgba(0,0,0,0.15);">
+                Total Hours: <span id="ganttHoursValue">0</span>h
+                <span id="ganttFilterStatus" style="margin-left: 20px; font-size: 0.85em; opacity: 0.9;"></span>
+            </div>
+
+            <!-- Gantt Controls -->
+            <div style="background: white; padding: 20px; border-radius: 8px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+                <div style="display: flex; flex-wrap: wrap; gap: 15px; align-items: center;">
+                    <!-- Collapse/Expand Buttons -->
+                    <div style="display: flex; gap: 10px;">
+                        <button onclick="collapseAllGantt()" style="padding: 8px 16px; background: #667eea; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 0.9em; font-weight: 500;">
+                            ▶ Collapse All
+                        </button>
+                        <button onclick="expandAllGantt()" style="padding: 8px 16px; background: #764ba2; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 0.9em; font-weight: 500;">
+                            ▼ Expand All
+                        </button>
+                    </div>
+
+                    <!-- Filters -->
+                    <div style="display: flex; gap: 10px; flex-wrap: wrap; flex: 1;">
+                        <input type="text" id="ganttSearchFilter" placeholder="🔍 Search tasks..."
+                               onkeyup="filterGanttChart()"
+                               style="padding: 8px 12px; border: 1px solid #cbd5e0; border-radius: 6px; font-size: 0.85em; min-width: 200px;">
+
+                        <select id="ganttTypeFilter" onchange="filterGanttChart()"
+                                style="padding: 8px 12px; border: 1px solid #cbd5e0; border-radius: 6px; font-size: 0.85em; cursor: pointer;">
+                            <option value="">All Types</option>
+                            <option value="Parent">Parent</option>
+                            <option value="Epic">Epic</option>
+                            <option value="Story">Story</option>
+                            <option value="Task">Task</option>
+                            <option value="Bug">Bug</option>
+                            <option value="Sub-task">Sub-task</option>
+                        </select>
+
+                        <input type="text" id="ganttStartDate"
+                               placeholder="Start: DD.MM.YYYY"
+                               onblur="filterGanttChart()"
+                               style="padding: 8px 12px; border: 1px solid #cbd5e0; border-radius: 6px; font-size: 0.85em; width: 130px;">
+
+                        <input type="text" id="ganttEndDate"
+                               placeholder="End: DD.MM.YYYY"
+                               onblur="filterGanttChart()"
+                               style="padding: 8px 12px; border: 1px solid #cbd5e0; border-radius: 6px; font-size: 0.85em; width: 130px;">
+                    </div>
+
+                    <!-- Sort -->
+                    <div>
+                        <select id="ganttSortBy" onchange="sortGanttChart()"
+                                style="padding: 8px 12px; border: 1px solid #cbd5e0; border-radius: 6px; font-size: 0.85em; cursor: pointer;">
+                            <option value="default">Sort: Default</option>
+                            <option value="hours-desc">Sort: Hours (High to Low)</option>
+                            <option value="hours-asc">Sort: Hours (Low to High)</option>
+                            <option value="name-asc">Sort: Name (A to Z)</option>
+                            <option value="name-desc">Sort: Name (Z to A)</option>
+                            <option value="duration-desc">Sort: Duration (Longest)</option>
+                            <option value="duration-asc">Sort: Duration (Shortest)</option>
+                        </select>
+                    </div>
+
+                    <!-- Clear Filters -->
+                    <button onclick="clearGanttFilters()" style="padding: 8px 16px; background: #e5e7eb; color: #374151; border: none; border-radius: 6px; cursor: pointer; font-size: 0.85em;">
+                        Clear Filters
+                    </button>
+                </div>
+            </div>
+
+            <div style="background: white; padding: 25px; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); margin-bottom: 30px; overflow-x: auto;">
+                <div id="ganttChart" style="min-height: 600px;"></div>
+            </div>
+            <div style="text-align: center; padding: 20px 40px;">
+                <a href="#" class="go-to-top">⬆️ Go to Top</a>
             </div>
         </div>
 
@@ -2077,6 +2534,9 @@ class JiraWorklogExtractor:
         html += """
                 </div>
             </div>
+            <div style="text-align: center; padding: 20px 40px;">
+                <a href="#" class="go-to-top">⬆️ Go to Top</a>
+            </div>
         </div>
 
         <div class="section" id="year-month">
@@ -2146,6 +2606,9 @@ class JiraWorklogExtractor:
         html += """
                 </tbody>
             </table>
+            <div style="text-align: center; padding: 20px 40px;">
+                <a href="#" class="go-to-top">⬆️ Go to Top</a>
+            </div>
         </div>
 
         <div class="section" id="product-item">
@@ -2202,6 +2665,9 @@ class JiraWorklogExtractor:
                     </tr>
                 </tfoot>
             </table>
+            <div style="text-align: center; padding: 20px 40px;">
+                <a href="#" class="go-to-top">⬆️ Go to Top</a>
+            </div>
         </div>
 
         <div class="section" id="component">
@@ -2258,6 +2724,9 @@ class JiraWorklogExtractor:
                     </tr>
                 </tfoot>
             </table>
+            <div style="text-align: center; padding: 20px 40px;">
+                <a href="#" class="go-to-top">⬆️ Go to Top</a>
+            </div>
         </div>
 
         <div class="section" id="label">
@@ -2314,6 +2783,9 @@ class JiraWorklogExtractor:
                     </tr>
                 </tfoot>
             </table>
+            <div style="text-align: center; padding: 20px 40px;">
+                <a href="#" class="go-to-top">⬆️ Go to Top</a>
+            </div>
         </div>
 
         <div class="section" id="team">
@@ -2370,6 +2842,9 @@ class JiraWorklogExtractor:
                     </tr>
                 </tfoot>
             </table>
+            <div style="text-align: center; padding: 20px 40px;">
+                <a href="#" class="go-to-top">⬆️ Go to Top</a>
+            </div>
         </div>
 
         <div class="section" id="component-label-product">
@@ -2430,6 +2905,9 @@ class JiraWorklogExtractor:
                     </tr>
                 </tfoot>
             </table>
+            <div style="text-align: center; padding: 20px 40px;">
+                <a href="#" class="go-to-top">⬆️ Go to Top</a>
+            </div>
         </div>
 
         <div class="section" id="team-component-label">
@@ -2490,6 +2968,9 @@ class JiraWorklogExtractor:
                     </tr>
                 </tfoot>
             </table>
+            <div style="text-align: center; padding: 20px 40px;">
+                <a href="#" class="go-to-top">⬆️ Go to Top</a>
+            </div>
         </div>
 
         <div class="section" id="author">
@@ -2585,30 +3066,39 @@ class JiraWorklogExtractor:
                     </tr>
                 </tfoot>
             </table>
+            <div style="text-align: center; padding: 20px 40px;">
+                <a href="#" class="go-to-top">⬆️ Go to Top</a>
+            </div>
         </div>
 
         <div class="section" id="issue">
             <h2 class="section-title">Hours by Issue</h2>
-            <table class="compact-table">
-                <thead>
-                    <tr>
-                        <th>Issue Key</th>
-                        <th>Summary</th>
-                        <th>Type</th>
-                        <th>Epic Link</th>
-                        <th>Parent Link</th>
-                        <th>Product Item</th>
-                        <th>Component</th>
-                        <th>Label</th>
-                        <th>Team</th>
-                        <th>Hours</th>
-                        <th>Entries</th>
-                        <th>Contributors</th>
-                        <th>% of Total</th>
-                        <th>Distribution</th>
-                    </tr>
-                </thead>
-                <tbody>
+            <div class="table-wrapper">
+                <table class="compact-table">
+                    <thead>
+                        <tr>
+                            <th>Issue Key</th>
+                            <th>Summary</th>
+                            <th>Type</th>
+                            <th>Epic Link</th>
+                            <th>Parent Link</th>
+                            <th>Product Item</th>
+                            <th>Component</th>
+                            <th>Label</th>
+                            <th>Team</th>
+                            <th>Created</th>
+                            <th>Updated</th>
+                            <th>Due Date</th>
+                            <th>Target Start</th>
+                            <th>Target End</th>
+                            <th>Hours</th>
+                            <th>Entries</th>
+                            <th>Contributors</th>
+                            <th>% of Total</th>
+                            <th>Distribution</th>
+                        </tr>
+                    </thead>
+                    <tbody>
 """
 
         # Calculate totals for Issue
@@ -2643,6 +3133,14 @@ class JiraWorklogExtractor:
             team = stats.get('team', 'None')
 
             issue_link = make_issue_link(issue_key)
+
+            # Format date fields
+            created = stats.get('created', '-')
+            updated = stats.get('updated', '-')
+            duedate = stats.get('duedate', '-') if stats.get('duedate') else '-'
+            target_start = stats.get('target_start', '-') if stats.get('target_start') else '-'
+            target_end = stats.get('target_end', '-') if stats.get('target_end') else '-'
+
             html += f"""
                     <tr>
                         <td>{issue_link}</td>
@@ -2654,6 +3152,11 @@ class JiraWorklogExtractor:
                         <td>{components}</td>
                         <td>{labels}</td>
                         <td>{team}</td>
+                        <td>{created}</td>
+                        <td>{updated}</td>
+                        <td>{duedate}</td>
+                        <td>{target_start}</td>
+                        <td>{target_end}</td>
                         <td>{stats['hours']:.2f}h</td>
                         <td>{stats['entries']}</td>
                         <td>{contributors}</td>
@@ -2672,7 +3175,7 @@ class JiraWorklogExtractor:
                 </tbody>
                 <tfoot>
                     <tr style="font-weight: bold; background-color: #f0f0f0;">
-                        <td colspan="9">TOTAL</td>
+                        <td colspan="14">TOTAL</td>
                         <td>{issue_total_hours:.2f}h</td>
                         <td>{issue_total_entries}</td>
                         <td>{issue_total_contributors} unique</td>
@@ -2680,19 +3183,29 @@ class JiraWorklogExtractor:
                         <td></td>
                     </tr>
                 </tfoot>
-            </table>
+                </table>
+            </div>
+            <div style="text-align: center; padding: 20px 40px;">
+                <a href="#" class="go-to-top">⬆️ Go to Top</a>
+            </div>
         </div>
 
         <div class="section" id="all-entries">
             <h2 class="section-title">All Worklog Entries</h2>
-            <table class="compact-table">
-                <thead>
-                    <tr>
+            <div class="table-wrapper">
+                <table class="compact-table">
+                    <thead>
+                        <tr>
                         <th>Issue</th>
                         <th>Summary</th>
                         <th>Type</th>
                         <th>Epic Link</th>
                         <th>Parent Link</th>
+                        <th>Created</th>
+                        <th>Updated</th>
+                        <th>Due Date</th>
+                        <th>Target Start</th>
+                        <th>Target End</th>
                         <th>Author</th>
                         <th>Date</th>
                         <th>Time Spent</th>
@@ -2723,6 +3236,14 @@ class JiraWorklogExtractor:
             summary = worklog['summary'][:50] + '...' if len(worklog['summary']) > 50 else worklog['summary']
             summary = summary if summary else '-'
             issue_link = make_issue_link(worklog['issue_key'])
+
+            # Format date fields
+            created = worklog.get('created', '-')
+            updated = worklog.get('updated', '-')
+            duedate = worklog.get('duedate', '-') if worklog.get('duedate') else '-'
+            target_start = worklog.get('target_start', '-') if worklog.get('target_start') else '-'
+            target_end = worklog.get('target_end', '-') if worklog.get('target_end') else '-'
+
             html += f"""
                     <tr>
                         <td>{issue_link}</td>
@@ -2730,6 +3251,11 @@ class JiraWorklogExtractor:
                         <td>{worklog['issue_type']}</td>
                         <td>{epic_display}</td>
                         <td>{parent_display}</td>
+                        <td>{created}</td>
+                        <td>{updated}</td>
+                        <td>{duedate}</td>
+                        <td>{target_start}</td>
+                        <td>{target_end}</td>
                         <td>{worklog['author']}</td>
                         <td>{worklog['started'][:10]}</td>
                         <td>{worklog['time_spent']}</td>
@@ -2739,7 +3265,11 @@ class JiraWorklogExtractor:
 
         html += """
                 </tbody>
-            </table>
+                </table>
+            </div>
+            <div style="text-align: center; padding: 20px 40px;">
+                <a href="#" class="go-to-top">⬆️ Go to Top</a>
+            </div>
         </div>
 
         <div class="footer">
@@ -2763,7 +3293,14 @@ class JiraWorklogExtractor:
     <!-- Chart.js Library -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 
+    <!-- Flatpickr Datepicker Library -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
+
     <script>
+        // Jira URL for creating links
+        const jiraUrl = """ + json.dumps(JIRA_URL) + """;
+
         function toggleDetails(id) {
             const element = document.getElementById(id);
             element.classList.toggle('active');
@@ -2992,6 +3529,12 @@ class JiraWorklogExtractor:
         // Time Series Data (aggregated by date)
         const timeSeriesLabels = """ + str([ym for ym, _ in year_month_sorted]) + """;
         const timeSeriesHours = """ + str([stats['hours'] for _, stats in year_month_sorted]) + """;
+
+        // Gantt Chart Hierarchical Data
+        let ganttData = """ + json.dumps(dict(gantt_hierarchy), default=str) + """;
+
+        // Worklog date mapping for Gantt filtering (issue_key -> array of {date, hours})
+        let ganttWorklogData = """ + json.dumps(dict(worklog_by_issue), default=str) + """;
 
         // Create Team Distribution Pie Chart
         const teamCtx = document.getElementById('teamPieChart').getContext('2d');
@@ -3281,6 +3824,604 @@ class JiraWorklogExtractor:
                 }
             }
         });
+
+        // =============================================================================
+        // GANTT CHART RENDERING
+        // =============================================================================
+
+        // Collapse/expand state for Gantt chart
+        const ganttCollapseState = {};
+
+        function toggleGanttRow(rowId) {
+            ganttCollapseState[rowId] = !ganttCollapseState[rowId];
+            renderGanttChart();
+        }
+
+        function renderGanttChart() {
+            const ganttContainer = document.getElementById('ganttChart');
+            if (!ganttContainer) return;
+
+            // Build gantt rows from hierarchical data
+            let rows = [];
+            let rowIndex = 0;
+
+            // Iterate through parents
+            for (const [parentKey, parentData] of Object.entries(ganttData)) {
+                const parentName = parentData.parent_name || parentKey;
+                const parentHours = parentData.hours || 0;
+                const parentStart = parentData.start_date;
+                const parentEnd = parentData.end_date;
+                const parentId = `parent-${rowIndex}`;
+                const parentCollapsed = ganttCollapseState[parentId] || false;
+
+                // Add parent row
+                rows.push({
+                    id: parentId,
+                    level: 0,
+                    name: parentName,
+                    key: parentKey,
+                    hours: parentHours,
+                    start: parentStart,
+                    end: parentEnd,
+                    type: 'Parent',
+                    visible: true,
+                    hasChildren: Object.keys(parentData.epics).length > 0,
+                    collapsed: parentCollapsed,
+                    parentId: null
+                });
+                rowIndex++;
+
+                // Iterate through epics
+                for (const [epicKey, epicData] of Object.entries(parentData.epics)) {
+                    const epicName = epicData.epic_name || epicKey;
+                    const epicHours = epicData.hours || 0;
+                    const epicStart = epicData.start_date;
+                    const epicEnd = epicData.end_date;
+                    const epicId = `epic-${rowIndex}`;
+                    const epicCollapsed = ganttCollapseState[epicId] || false;
+
+                    // Add epic row (visible only if parent not collapsed)
+                    rows.push({
+                        id: epicId,
+                        level: 1,
+                        name: epicName,
+                        key: epicKey,
+                        hours: epicHours,
+                        start: epicStart,
+                        end: epicEnd,
+                        type: 'Epic',
+                        visible: !parentCollapsed,
+                        hasChildren: Object.keys(epicData.issues).length > 0,
+                        collapsed: epicCollapsed,
+                        parentId: parentId
+                    });
+                    rowIndex++;
+
+                    // Iterate through issues
+                    for (const [issueKey, issueData] of Object.entries(epicData.issues)) {
+                        const issueName = issueData.summary || issueKey;
+                        const issueHours = issueData.hours || 0;
+                        const issueStart = issueData.start_date;
+                        const issueEnd = issueData.end_date;
+                        const issueType = issueData.issue_type || 'Task';
+
+                        // Add issue row (visible only if parent and epic not collapsed)
+                        rows.push({
+                            id: `issue-${rowIndex}`,
+                            level: 2,
+                            name: `${issueKey}: ${issueName}`,
+                            key: issueKey,
+                            hours: issueHours,
+                            start: issueStart,
+                            end: issueEnd,
+                            type: issueType,
+                            visible: !parentCollapsed && !epicCollapsed,
+                            hasChildren: false,
+                            collapsed: false,
+                            parentId: epicId
+                        });
+                        rowIndex++;
+                    }
+                }
+            }
+
+            // Filter out rows without dates
+            rows = rows.filter(row => row.start && row.end);
+
+            if (rows.length === 0) {
+                ganttContainer.innerHTML = '<p style="text-align: center; color: #666; padding: 40px;">No data available with valid date ranges to display in Gantt chart.</p>';
+                return;
+            }
+
+            // Calculate date range
+            const allDates = rows.flatMap(r => [new Date(r.start), new Date(r.end)]);
+            const minDate = new Date(Math.min(...allDates));
+            const maxDate = new Date(Math.max(...allDates));
+            const dateRange = maxDate - minDate;
+            const totalDays = Math.ceil(dateRange / (1000 * 60 * 60 * 24));
+
+            // Generate month markers for timeline
+            const monthMarkers = [];
+            let currentDate = new Date(minDate);
+            currentDate.setDate(1); // Start at first of month
+
+            while (currentDate <= maxDate) {
+                const monthStart = new Date(currentDate);
+                const monthEnd = new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 0);
+                const displayEnd = monthEnd > maxDate ? maxDate : monthEnd;
+
+                const leftPercent = ((monthStart - minDate) / dateRange) * 100;
+                const rightDate = displayEnd > maxDate ? maxDate : displayEnd;
+                const widthPercent = ((rightDate - monthStart) / dateRange) * 100;
+
+                monthMarkers.push({
+                    label: monthStart.toLocaleDateString('en-US', { month: 'short', year: 'numeric' }),
+                    leftPercent: leftPercent,
+                    widthPercent: widthPercent
+                });
+
+                currentDate.setMonth(currentDate.getMonth() + 1);
+            }
+
+            // Set minimum timeline width based on total days (wider for longer projects)
+            const minTimelineWidth = Math.max(800, totalDays * 3); // 3px per day minimum
+
+            // Build HTML with horizontal scroll
+            let html = '<div style="overflow-x: auto; max-width: 100%;">';
+            html += `<div style="min-width: ${minTimelineWidth}px;">`;
+
+            // Header row
+            html += `
+                <div style="display: flex; align-items: stretch; background: #f8f9fa; border-bottom: 2px solid #667eea; font-weight: bold; font-size: 0.75em; position: sticky; top: 0; z-index: 10;">
+                    <div style="display: flex; flex-direction: column; justify-content: flex-end;">
+                        <div style="width: 250px; padding: 8px 0 8px 10px;">Task Name</div>
+                    </div>
+                    <div style="display: flex; flex-direction: column; justify-content: flex-end;">
+                        <div style="width: 80px; text-align: center; padding: 8px 0;">Type</div>
+                    </div>
+                    <div style="display: flex; flex-direction: column; justify-content: flex-end;">
+                        <div style="width: 70px; text-align: center; padding: 8px 0;">Hours</div>
+                    </div>
+                    <div style="flex: 1; min-width: ${minTimelineWidth - 400}px; display: flex; flex-direction: column; padding: 0 10px;">
+                        <!-- Month/Year row -->
+                        <div style="position: relative; height: 24px; border-bottom: 1px solid #cbd5e0;">
+            `;
+
+            // Month markers in timeline header
+            monthMarkers.forEach(marker => {
+                html += `
+                    <div style="position: absolute; left: ${marker.leftPercent}%; width: ${marker.widthPercent}%; text-align: center; font-size: 0.7em; color: #667eea; font-weight: 600; line-height: 24px;">
+                        ${marker.label}
+                    </div>
+                `;
+            });
+
+            html += `
+                        </div>
+                        <!-- Date markers row -->
+                        <div style="position: relative; height: 20px;">
+            `;
+
+            // Date markers
+            const weekCount = Math.ceil(totalDays / 7);
+            for (let i = 0; i <= weekCount; i++) {
+                const dayOffset = i * 7;
+                const markerDate = new Date(minDate.getTime() + dayOffset * 24 * 60 * 60 * 1000);
+                if (markerDate <= maxDate) {
+                    const markerPercent = ((markerDate - minDate) / dateRange) * 100;
+                    html += `
+                        <div style="position: absolute; left: ${markerPercent}%; height: 100%; border-left: 1px solid #cbd5e0;">
+                            <span style="font-size: 0.65em; color: #999; margin-left: 2px;">${markerDate.getDate()}</span>
+                        </div>
+                    `;
+                }
+            }
+
+            html += `
+                        </div>
+                    </div>
+                </div>
+            `;
+
+            // Data rows
+            rows.forEach(row => {
+                if (!row.visible) return; // Skip hidden rows
+
+                const startDate = new Date(row.start);
+                const endDate = new Date(row.end);
+                const duration = endDate - startDate;
+                const leftPercent = ((startDate - minDate) / dateRange) * 100;
+                const widthPercent = (duration / dateRange) * 100;
+
+                const indentPx = row.level * 20;
+                const bgColor = row.level === 0 ? '#667eea' : row.level === 1 ? '#764ba2' : '#10b981';
+                const expandIcon = row.hasChildren ? (row.collapsed ? '▶' : '▼') : '';
+                const cursorStyle = 'cursor: pointer;';
+
+                html += `
+                    <div style="display: flex; align-items: center; padding: 6px 0; border-bottom: 1px solid #e5e7eb; font-size: 0.75em; background: ${row.level === 0 ? '#f8fafc' : 'white'};">
+                        <div style="width: 250px; padding-left: ${indentPx + 10}px; font-weight: ${row.level < 2 ? '600' : 'normal'}; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; ${cursorStyle}" title="Click to open ${row.key} in Jira\n${row.name}">
+                            ${expandIcon ? `<span style="display: inline-block; width: 12px; margin-right: 4px;" onclick="event.stopPropagation(); toggleGanttRow('${row.id}')">${expandIcon}</span>` : '<span style="display: inline-block; width: 12px; margin-right: 4px;"></span>'}
+                            <span onclick="window.open('${jiraUrl}/browse/${row.key}', '_blank')" style="color: #2563eb; text-decoration: none;" onmouseover="this.style.textDecoration='underline'" onmouseout="this.style.textDecoration='none'">${row.level === 0 ? '📁' : row.level === 1 ? '📊' : '📝'} ${row.name.substring(0, 35)}${row.name.length > 35 ? '...' : ''}</span>
+                        </div>
+                        <div style="width: 80px; text-align: center; font-size: 0.7em; color: #666;">
+                            ${row.type}
+                        </div>
+                        <div style="width: 70px; text-align: center; color: #666;">
+                            ${row.hours.toFixed(1)}h
+                        </div>
+                        <div style="flex: 1; min-width: ${minTimelineWidth - 400}px; position: relative; height: 26px; padding: 0 10px;">
+                            <div style="position: absolute; left: ${leftPercent}%; width: ${widthPercent}%; height: 100%; background: ${bgColor}; border-radius: 4px; display: flex; align-items: center; justify-content: center; color: white; font-size: 0.65em; font-weight: 600; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.2); cursor: pointer; transition: opacity 0.2s;" title="Click to open ${row.key} in Jira\n${row.start} to ${row.end}" onclick="window.open('${jiraUrl}/browse/${row.key}', '_blank')" onmouseover="this.style.opacity='0.8'" onmouseout="this.style.opacity='1'">
+                                ${widthPercent > 3 ? row.key : ''}
+                            </div>
+                        </div>
+                    </div>
+                `;
+            });
+
+            html += '</div></div>';
+
+            ganttContainer.innerHTML = html;
+
+            // Calculate and display total hours
+            let totalHours = 0;
+            for (const [parentKey, parentData] of Object.entries(ganttData)) {
+                totalHours += parentData.hours || 0;
+            }
+            document.getElementById('ganttHoursValue').textContent = totalHours.toFixed(1);
+        }
+
+        // Render the Gantt chart
+        renderGanttChart();
+
+        // =============================================================================
+        // INITIALIZE DATEPICKERS
+        // =============================================================================
+        flatpickr("#ganttStartDate", {
+            dateFormat: "d.m.Y",
+            allowInput: true,
+            onChange: function(selectedDates, dateStr, instance) {
+                filterGanttChart();
+            }
+        });
+
+        flatpickr("#ganttEndDate", {
+            dateFormat: "d.m.Y",
+            allowInput: true,
+            onChange: function(selectedDates, dateStr, instance) {
+                filterGanttChart();
+            }
+        });
+
+        // =============================================================================
+        // GANTT CHART FILTER, SORT, AND COLLAPSE/EXPAND FUNCTIONS
+        // =============================================================================
+
+        // Store original gantt data for filtering and sorting
+        let ganttOriginalData = JSON.parse(JSON.stringify(ganttData));
+        let ganttCurrentSort = 'default';
+
+        // Collapse all gantt rows
+        function collapseAllGantt() {
+            // Set all rows to collapsed
+            for (const key in ganttCollapseState) {
+                ganttCollapseState[key] = true;
+            }
+            // Also collapse all parents and epics by setting their IDs
+            let rowIndex = 0;
+            for (const [parentKey, parentData] of Object.entries(ganttData)) {
+                ganttCollapseState[`parent-${rowIndex}`] = true;
+                rowIndex++;
+                for (const [epicKey, epicData] of Object.entries(parentData.epics)) {
+                    ganttCollapseState[`epic-${rowIndex}`] = true;
+                    rowIndex++;
+                    rowIndex += Object.keys(epicData.issues).length;
+                }
+            }
+            renderGanttChart();
+        }
+
+        // Expand all gantt rows
+        function expandAllGantt() {
+            // Clear all collapse states
+            for (const key in ganttCollapseState) {
+                ganttCollapseState[key] = false;
+            }
+            renderGanttChart();
+        }
+
+        // Parse DD.MM.YYYY format to YYYY-MM-DD
+        function parseDateDDMMYYYY(dateStr) {
+            if (!dateStr) return null;
+            const parts = dateStr.trim().split('.');
+            if (parts.length !== 3) return null;
+            const day = parts[0].padStart(2, '0');
+            const month = parts[1].padStart(2, '0');
+            const year = parts[2];
+            if (year.length !== 4) return null;
+            return `${year}-${month}-${day}`;
+        }
+
+        // Filter gantt chart with date-based worklog filtering
+        function filterGanttChart() {
+            try {
+                console.log('filterGanttChart called');
+                const searchTerm = document.getElementById('ganttSearchFilter').value.toLowerCase();
+                const typeFilter = document.getElementById('ganttTypeFilter').value;
+                const startDateInput = document.getElementById('ganttStartDate').value;
+                const endDateInput = document.getElementById('ganttEndDate').value;
+
+                console.log('Filter inputs:', { searchTerm, typeFilter, startDateInput, endDateInput });
+
+                // Convert DD.MM.YYYY to YYYY-MM-DD
+                const startDateFilter = parseDateDDMMYYYY(startDateInput);
+                const endDateFilter = parseDateDDMMYYYY(endDateInput);
+
+                console.log('Parsed dates:', { startDateFilter, endDateFilter });
+
+                // Validate date format if provided
+                if (startDateInput && !startDateFilter) {
+                    alert('Invalid start date format. Please use DD.MM.YYYY (e.g., 01.07.2025)');
+                    return;
+                }
+                if (endDateInput && !endDateFilter) {
+                    alert('Invalid end date format. Please use DD.MM.YYYY (e.g., 31.12.2025)');
+                    return;
+                }
+
+            // Helper function to calculate hours for an issue within date range
+            function calculateFilteredHours(issueKey) {
+                const worklogs = ganttWorklogData[issueKey] || [];
+                let totalHours = 0;
+                let minDate = null;
+                let maxDate = null;
+
+                for (const wl of worklogs) {
+                    // Check if worklog date is within filter range
+                    const wlDate = wl.date;
+                    if (startDateFilter && wlDate < startDateFilter) continue;
+                    if (endDateFilter && wlDate > endDateFilter) continue;
+
+                    totalHours += wl.hours;
+                    if (!minDate || wlDate < minDate) minDate = wlDate;
+                    if (!maxDate || wlDate > maxDate) maxDate = wlDate;
+                }
+
+                return { hours: totalHours, start_date: minDate, end_date: maxDate };
+            }
+
+            // Create filtered data with recalculated hours
+            let filteredData = {};
+
+            for (const [parentKey, parentData] of Object.entries(ganttOriginalData)) {
+                let parentHours = 0;
+                let parentStartDate = null;
+                let parentEndDate = null;
+
+                // Check parent search match
+                const parentSearchMatch = !searchTerm ||
+                    parentData.parent_name.toLowerCase().includes(searchTerm) ||
+                    parentKey.toLowerCase().includes(searchTerm);
+
+                // Filter epics
+                let filteredEpics = {};
+                for (const [epicKey, epicData] of Object.entries(parentData.epics)) {
+                    let epicHours = 0;
+                    let epicStartDate = null;
+                    let epicEndDate = null;
+
+                    // Check epic search match
+                    const epicSearchMatch = !searchTerm ||
+                        epicData.epic_name.toLowerCase().includes(searchTerm) ||
+                        epicKey.toLowerCase().includes(searchTerm);
+
+                    // Filter issues
+                    let filteredIssues = {};
+                    for (const [issueKey, issueData] of Object.entries(epicData.issues)) {
+                        // Calculate hours for this issue within date range
+                        const { hours, start_date, end_date } = calculateFilteredHours(issueKey);
+
+                        // Skip if no hours in date range or no valid dates
+                        if ((startDateFilter || endDateFilter) && (hours === 0 || !start_date || !end_date)) continue;
+
+                        // Check search match
+                        const issueSearchMatch = !searchTerm ||
+                            issueData.summary.toLowerCase().includes(searchTerm) ||
+                            issueKey.toLowerCase().includes(searchTerm);
+
+                        // Check type filter
+                        const typeMatch = !typeFilter || typeFilter === issueData.issue_type;
+
+                        // Include issue if it matches all filters
+                        if (issueSearchMatch && typeMatch) {
+                            filteredIssues[issueKey] = {
+                                ...issueData,
+                                hours: hours,
+                                start_date: start_date,
+                                end_date: end_date
+                            };
+
+                            epicHours += hours;
+                            if (start_date) {
+                                if (!epicStartDate || start_date < epicStartDate) epicStartDate = start_date;
+                            }
+                            if (end_date) {
+                                if (!epicEndDate || end_date > epicEndDate) epicEndDate = end_date;
+                            }
+                        }
+                    }
+
+                    // Include epic if it has matching issues AND hours > 0 (when date filter active)
+                    const epicTypeMatch = !typeFilter || typeFilter === 'Epic';
+                    const hasMatchingIssues = Object.keys(filteredIssues).length > 0;
+                    const shouldIncludeEpic = (startDateFilter || endDateFilter)
+                        ? (hasMatchingIssues && epicHours > 0)
+                        : (hasMatchingIssues || (epicSearchMatch && epicTypeMatch));
+
+                    if (shouldIncludeEpic) {
+                        filteredEpics[epicKey] = {
+                            ...epicData,
+                            issues: filteredIssues,
+                            hours: epicHours,
+                            start_date: epicStartDate,
+                            end_date: epicEndDate
+                        };
+
+                        parentHours += epicHours;
+                        if (epicStartDate) {
+                            if (!parentStartDate || epicStartDate < parentStartDate) parentStartDate = epicStartDate;
+                        }
+                        if (epicEndDate) {
+                            if (!parentEndDate || epicEndDate > parentEndDate) parentEndDate = epicEndDate;
+                        }
+                    }
+                }
+
+                // Include parent if it has matching epics AND hours > 0 (when date filter active)
+                const parentTypeMatch = !typeFilter || typeFilter === 'Parent';
+                const hasMatchingEpics = Object.keys(filteredEpics).length > 0;
+                const shouldIncludeParent = (startDateFilter || endDateFilter)
+                    ? (hasMatchingEpics && parentHours > 0)
+                    : (hasMatchingEpics || (parentSearchMatch && parentTypeMatch));
+
+                if (shouldIncludeParent) {
+                    filteredData[parentKey] = {
+                        ...parentData,
+                        epics: filteredEpics,
+                        hours: parentHours,
+                        start_date: parentStartDate,
+                        end_date: parentEndDate
+                    };
+                }
+            }
+
+            // Update ganttData and re-render
+            ganttData = filteredData;
+            console.log('Filtered data:', Object.keys(filteredData).length, 'parents');
+            renderGanttChart();
+            } catch (error) {
+                console.error('Error in filterGanttChart:', error);
+                alert('Error filtering Gantt chart: ' + error.message);
+            }
+        }
+
+        // Sort gantt chart
+        function sortGanttChart() {
+            try {
+                console.log('sortGanttChart called');
+
+            const sortBy = document.getElementById('ganttSortBy').value;
+            ganttCurrentSort = sortBy;
+
+            if (sortBy === 'default') {
+                ganttData = JSON.parse(JSON.stringify(ganttOriginalData));
+                filterGanttChart(); // Reapply filters
+                return;
+            }
+
+            // Sort the data
+            let sortedData = {};
+
+            // Get all entries and sort them
+            let parentEntries = Object.entries(ganttData);
+
+            if (sortBy === 'hours-desc') {
+                parentEntries.sort((a, b) => b[1].hours - a[1].hours);
+            } else if (sortBy === 'hours-asc') {
+                parentEntries.sort((a, b) => a[1].hours - b[1].hours);
+            } else if (sortBy === 'name-asc') {
+                parentEntries.sort((a, b) => (a[1].parent_name || a[0]).localeCompare(b[1].parent_name || b[0]));
+            } else if (sortBy === 'name-desc') {
+                parentEntries.sort((a, b) => (b[1].parent_name || b[0]).localeCompare(a[1].parent_name || a[0]));
+            } else if (sortBy === 'duration-desc' || sortBy === 'duration-asc') {
+                parentEntries.sort((a, b) => {
+                    const durA = a[1].start_date && a[1].end_date ?
+                        (new Date(a[1].end_date) - new Date(a[1].start_date)) : 0;
+                    const durB = b[1].start_date && b[1].end_date ?
+                        (new Date(b[1].end_date) - new Date(b[1].start_date)) : 0;
+                    return sortBy === 'duration-desc' ? durB - durA : durA - durB;
+                });
+            }
+
+            // Rebuild sorted data
+            parentEntries.forEach(([key, data]) => {
+                // Sort epics within parent
+                let epicEntries = Object.entries(data.epics);
+                if (sortBy.includes('hours')) {
+                    epicEntries.sort((a, b) => sortBy === 'hours-desc' ? b[1].hours - a[1].hours : a[1].hours - b[1].hours);
+                } else if (sortBy.includes('name')) {
+                    epicEntries.sort((a, b) => {
+                        const cmp = (a[1].epic_name || a[0]).localeCompare(b[1].epic_name || b[0]);
+                        return sortBy === 'name-desc' ? -cmp : cmp;
+                    });
+                } else if (sortBy.includes('duration')) {
+                    epicEntries.sort((a, b) => {
+                        const durA = a[1].start_date && a[1].end_date ?
+                            (new Date(a[1].end_date) - new Date(a[1].start_date)) : 0;
+                        const durB = b[1].start_date && b[1].end_date ?
+                            (new Date(b[1].end_date) - new Date(b[1].start_date)) : 0;
+                        return sortBy === 'duration-desc' ? durB - durA : durA - durB;
+                    });
+                }
+
+                let sortedEpics = {};
+                epicEntries.forEach(([eKey, eData]) => {
+                    // Sort issues within epic
+                    let issueEntries = Object.entries(eData.issues);
+                    if (sortBy.includes('hours')) {
+                        issueEntries.sort((a, b) => sortBy === 'hours-desc' ? b[1].hours - a[1].hours : a[1].hours - b[1].hours);
+                    } else if (sortBy.includes('name')) {
+                        issueEntries.sort((a, b) => {
+                            const cmp = (a[1].summary || a[0]).localeCompare(b[1].summary || b[0]);
+                            return sortBy === 'name-desc' ? -cmp : cmp;
+                        });
+                    } else if (sortBy.includes('duration')) {
+                        issueEntries.sort((a, b) => {
+                            const durA = a[1].start_date && a[1].end_date ?
+                                (new Date(a[1].end_date) - new Date(a[1].start_date)) : 0;
+                            const durB = b[1].start_date && b[1].end_date ?
+                                (new Date(b[1].end_date) - new Date(b[1].start_date)) : 0;
+                            return sortBy === 'duration-desc' ? durB - durA : durA - durB;
+                        });
+                    }
+
+                    let sortedIssues = {};
+                    issueEntries.forEach(([iKey, iData]) => {
+                        sortedIssues[iKey] = iData;
+                    });
+
+                    sortedEpics[eKey] = {...eData, issues: sortedIssues};
+                });
+
+                sortedData[key] = {...data, epics: sortedEpics};
+            });
+
+            ganttData = sortedData;
+            renderGanttChart();
+            } catch (error) {
+                console.error('Error in sortGanttChart:', error);
+                alert('Error sorting Gantt chart: ' + error.message);
+            }
+        }
+
+        // Clear gantt filters
+        function clearGanttFilters() {
+            try {
+                console.log('clearGanttFilters called');
+
+            document.getElementById('ganttSearchFilter').value = '';
+            document.getElementById('ganttTypeFilter').value = '';
+            document.getElementById('ganttStartDate').value = '';
+            document.getElementById('ganttEndDate').value = '';
+            document.getElementById('ganttSortBy').value = 'default';
+
+            ganttData = JSON.parse(JSON.stringify(ganttOriginalData));
+            renderGanttChart();
+            } catch (error) {
+                console.error('Error in clearGanttFilters:', error);
+                alert('Error clearing filters: ' + error.message);
+            }
+        }
 
         // =============================================================================
         // TABLE FILTERING AND SORTING FUNCTIONALITY

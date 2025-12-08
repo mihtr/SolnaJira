@@ -2,9 +2,9 @@
 
 ![Tests](https://github.com/mihtr/SolnaJira/workflows/Tests/badge.svg)
 
-**Version: 1.2.0**
+**Version: 1.4.0**
 
-This tool extracts worklogs from Jira for the ZYN project, filtered by ERP Activity. It includes all issues linked to epics that match the filter criteria, with advanced analytics and interactive visualizations.
+This tool extracts worklogs from Jira for the ZYN project, filtered by ERP Activity. It includes all issues linked to epics that match the filter criteria, with advanced analytics, interactive visualizations, and a comprehensive Gantt chart timeline view. Now includes date tracking, full worklog pagination, and clickable Gantt chart with date-based filtering.
 
 ## Features
 
@@ -14,6 +14,8 @@ This tool extracts worklogs from Jira for the ZYN project, filtered by ERP Activ
 - Includes all issues linked to matched issues
 - Collects all sub-tasks of matched issues
 - Fetches enhanced metadata: epic names, parent links, teams, components, labels, product items
+- **Date tracking**: Created, Updated, Due Date, Target Start, Target End
+- **Full worklog pagination**: Automatically fetches ALL worklogs for each issue
 - Bearer token authentication
 - Parallel processing for fast extraction
 - Intelligent caching with TTL
@@ -37,6 +39,14 @@ This tool extracts worklogs from Jira for the ZYN project, filtered by ERP Activ
   - Hours by component bar chart
   - Hours by product item bar chart
   - Time series line chart (hours over time)
+- **Gantt Chart Timeline View**:
+  - Hierarchical visualization (Parent → Epic → Issue)
+  - Collapsible/expandable rows for navigation
+  - Color-coded bars by level (purple/violet/green)
+  - Date-based filtering with worklog recalculation
+  - Clickable bars and task names link to Jira
+  - Timeline adjusts to filtered date range
+  - Search, type filter, and sort capabilities
 - Visual progress bars and percentage distributions
 - Color-coded insight cards (critical/warning/info/success)
 
@@ -47,9 +57,15 @@ This tool extracts worklogs from Jira for the ZYN project, filtered by ERP Activ
   - Parent link tracking for epics
   - Sortable and filterable tables with column-specific filters
   - Compact table styling for better information density
-  - Navigation shortcuts to all sections
+  - Navigation shortcuts to all sections (including Gantt chart)
   - Expandable author details
   - Hours vs estimate analysis
+  - **Gantt Chart Section**:
+    - Interactive timeline with drag-free navigation
+    - Filterable by date range, type, and text search
+    - Sortable by hours, name, or duration
+    - Clickable links to Jira issues
+    - Total hours display updates with filters
 
 ### Configuration
 - Environment variable configuration support (.env file)
@@ -172,6 +188,15 @@ The script generates:
    - `summary`: Issue summary/title
    - `issue_type`: Issue type (Story, Task, Bug, Epic, Sub-task, etc.)
    - `epic_link`: Epic this issue belongs to
+   - `product_item`: Product item association
+   - `team`: Team name
+   - `components`: Components (comma-separated)
+   - `labels`: Labels (comma-separated)
+   - `created`: Issue creation date (YYYY-MM-DD)
+   - `updated`: Last update date (YYYY-MM-DD)
+   - `duedate`: Due date (YYYY-MM-DD)
+   - `target_start`: Target start date (YYYY-MM-DD)
+   - `target_end`: Target end date (YYYY-MM-DD)
    - `author`: Name of person who logged time
    - `author_email`: Email of author
    - `time_spent`: Time in human-readable format (e.g., "2h 30m")
@@ -181,11 +206,14 @@ The script generates:
 
 3. **HTML Report** (`<project>_worklogs_<timestamp>.html`): Interactive report with:
    - Summary dashboard with total hours, entries, contributors, and issues
+   - **Gantt Chart Timeline** with hierarchical visualization and filtering
    - Hours by Author with expandable detail views showing individual worklogs
-   - Hours by Issue with summary, type, epic link, and contributor breakdown
-   - Complete worklog entries table with all fields
+   - Hours by Issue with summary, type, epic link, dates, and contributor breakdown
+   - Complete worklog entries table with all fields including date tracking
    - Visual progress bars and percentage distributions
    - Professional styling with gradient header and responsive design
+   - Date columns: Created, Updated, Due Date, Target Start, Target End
+   - Clickable Jira issue links throughout (tables and Gantt chart)
 
 ### Example Output
 
